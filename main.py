@@ -26,8 +26,8 @@ if __name__ == "__main__":
             # Pass on_speech_started to track user activity
             self.client = RealtimeClient(
                 on_audio_delta=self.handle_audio_delta,
-                on_user_transcript=lambda t: print(f"User: {t}"),
-                on_agent_transcript=lambda t: print(f"Agent: {t}"),
+                on_user_transcript=self.handle_user_transcript,
+                on_agent_transcript=self.handle_agent_transcript,
                 on_speech_started=self.on_user_speech_start
             )
             self.audio_queue = asyncio.Queue()
@@ -110,6 +110,8 @@ if __name__ == "__main__":
             print("Resetting to IDLE")
             self.state = STATE_IDLE
             self.gui.set_state(0) # IDLE
+            self.gui.set_user_text("")
+            self.gui.set_agent_text("")
             await self.client.close()
             # clear buffer
             while not self.audio_queue.empty():
@@ -143,9 +145,17 @@ if __name__ == "__main__":
 
         def handle_audio_delta(self, audio_bytes):
             # Enqueue for playback
-            # print(f"Received Audio Chunk: {len(audio_bytes)} bytes") 
+            # print(f"Received Audio Chunk: {len(audio_bytes)} bytes")
             self.last_interaction_time = time.time() # Reset timer on receiving content
             self.audio_queue.put_nowait(audio_bytes)
+
+        def handle_user_transcript(self, text):
+            print(f"User: {text}")
+            self.gui.set_user_text(text)
+
+        def handle_agent_transcript(self, text):
+            print(f"Agent: {text}")
+            self.gui.set_agent_text(text)
 
         async def cleanup(self):
             print("Cleaning up...")
