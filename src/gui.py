@@ -1,6 +1,14 @@
 import pygame
 import asyncio
-from config import CHAR_OPEN_IMG, CHAR_CLOSED_IMG
+import config
+
+# Try absolute import first, fall back to relative
+try:
+    from src.animation.character_renderer import CharacterRenderer
+    from src.animation.animation_controller import AnimationController
+except ImportError:
+    from .animation.character_renderer import CharacterRenderer
+    from .animation.animation_controller import AnimationController
 
 class GUIHandler:
     def __init__(self):
@@ -17,28 +25,26 @@ class GUIHandler:
              
         pygame.display.set_caption("Kikai-kun")
         self.screen_w, self.screen_h = self.screen.get_size()
-        
-        try:
-            raw_closed = pygame.image.load(CHAR_CLOSED_IMG).convert_alpha()
-            raw_open = pygame.image.load(CHAR_OPEN_IMG).convert_alpha()
-            
-            # Scale to fit height (e.g. 80% of screen height)
-            target_h = int(self.screen_h * 0.8)
-            ratio = target_h / raw_closed.get_height()
-            target_w = int(raw_closed.get_width() * ratio)
-            
-            self.img_closed = pygame.transform.smoothscale(raw_closed, (target_w, target_h))
-            self.img_open = pygame.transform.smoothscale(raw_open, (target_w, target_h))
-            
-        except Exception as e:
-            print(f"Error loading images: {e}")
-            # Fallback
-            self.img_closed = pygame.Surface((300, 300))
-            self.img_closed.fill((0, 255, 0))
-            self.img_open = pygame.Surface((300, 300))
-            self.img_open.fill((255, 0, 0))
 
-        self.current_img = self.img_closed
+        # Initialize Live2D-style character animation system
+        try:
+            print(f"Initializing character animation system...")
+            print(f"Assets directory: {config.CHAR_ASSETS_DIR}")
+            self.character = CharacterRenderer(
+                screen_height=self.screen_h,
+                assets_dir=config.CHAR_ASSETS_DIR
+            )
+            print(f"CharacterRenderer created successfully")
+            self.animator = AnimationController(self.character)
+            print(f"AnimationController created successfully")
+        except Exception as e:
+            print(f"ERROR initializing character animation: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to simple colored square
+            self.character = None
+            self.animator = None
+            print(f"Using fallback colored square")
         self.state = 0 # 0: Waiting/Idle, 1: Listening, 2: Processing, 3: Speaking
         self.running = True
         self.clock = pygame.time.Clock()
@@ -99,21 +105,27 @@ class GUIHandler:
         elif self.state == 2: # PROCESSING (Yellow)
             pygame.draw.circle(self.screen, (255, 255, 0), (self.screen_w - 50, 50), 30)
 
-        
-        # Simple animation logic: if speaking, toggle between open/closed
-        if self.state == 3: # SPEAKING
-            # Simple toggle every 5 frames (~100ms at 60fps)
-            if (pygame.time.get_ticks() // 150) % 2 == 0:
-                self.current_img = self.img_open
-            else:
-                self.current_img = self.img_closed
-        else:
-            self.current_img = self.img_closed
 
-        # Center image
-        x = (self.screen_w - self.current_img.get_width()) // 2
-        y = (self.screen_h - self.current_img.get_height()) // 2
-        self.screen.blit(self.current_img, (x, y))
+        # Render animated character
+        if self.animator:
+            # Update animation state
+            self.animator.set_state(self.state)
+
+            # Get current animation frame
+            character_surface = self.animator.get_frame()
+
+            # Center and blit character
+            x = (self.screen_w - character_surface.get_width()) // 2
+            y = (self.screen_h - character_surface.get_height()) // 2
+            self.screen.blit(character_surface, (x, y))
+        else:
+            # Fallback: draw simple square
+            fallback_size = int(self.screen_h * 0.5)
+            fallback_surf = pygame.Surface((fallback_size, fallback_size))
+            fallback_surf.fill((0, 255, 0) if self.state != 3 else (255, 0, 0))
+            x = (self.screen_w - fallback_size) // 2
+            y = (self.screen_h - fallback_size) // 2
+            self.screen.blit(fallback_surf, (x, y))
 
         # Auto-switch pages for long text
         current_time = pygame.time.get_ticks()
