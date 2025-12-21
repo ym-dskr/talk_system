@@ -20,11 +20,6 @@ class AudioHandler:
     def start_stream(self, rate=24000, chunk=1024, input_callback=None):
         """
         Starts input and output streams.
-        :param input_callback: function to call with recorded audio chunk (bytes)
-        """
-    def start_stream(self, rate=24000, chunk=1024, input_callback=None):
-        """
-        Starts input and output streams.
         :param input_callback: function to call with recorded audio chunk (bytes) at 'rate'
         """
         from config import INPUT_DEVICE_INDEX, OUTPUT_DEVICE_INDEX, INPUT_CHANNELS, OUTPUT_CHANNELS, HARDWARE_SAMPLE_RATE
@@ -63,8 +58,6 @@ class AudioHandler:
             print(f"Failed to open input stream: {e}")
             raise e
             
-        self.chunk_size = chunk * (self.hw_rate // self.target_rate) # Adjust chunk read size
-        self.input_callback = input_callback
         self.chunk_size = chunk
         self.input_callback = input_callback
 

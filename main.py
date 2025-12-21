@@ -28,7 +28,8 @@ if __name__ == "__main__":
                 on_audio_delta=self.handle_audio_delta,
                 on_user_transcript=self.handle_user_transcript,
                 on_agent_transcript=self.handle_agent_transcript,
-                on_speech_started=self.on_user_speech_start
+                on_speech_started=self.on_user_speech_start,
+                on_response_done=self.on_response_done
             )
             self.audio_queue = asyncio.Queue()
             self.is_playing_response = False
@@ -40,6 +41,8 @@ if __name__ == "__main__":
             self.wake_word_resample_state = None 
             
             self.last_interaction_time = 0
+            self.response_in_progress = False
+            self.inactivity_timeout = 15.0  # 15 seconds of inactivity to return to idle
 
         async def run(self):
             # Start Audio Stream
@@ -51,12 +54,12 @@ if __name__ == "__main__":
             while self.gui.running:
                 # 1. Update GUI
                 self.gui.update()
-                
-                # Check Timeout (10 seconds)
+
+                # Check Inactivity Timeout - Return to IDLE instead of exiting
                 if self.state != STATE_IDLE:
-                    if time.time() - self.last_interaction_time > 10.0:
-                        print("Timeout: Auto-ending conversation.")
-                        self.gui.running = False # Exit application
+                    if time.time() - self.last_interaction_time > self.inactivity_timeout:
+                        print("Inactivity timeout: Returning to wake word detection.")
+                        await self.reset_to_idle()
 
                 # 2. Process Wake Word (if IDLE)
                 if self.state == STATE_IDLE:
@@ -122,8 +125,15 @@ if __name__ == "__main__":
             # Called when API detects user speech
             # print("User speech started")
             self.last_interaction_time = time.time()
+            self.response_in_progress = False
             if self.state != STATE_IDLE:
                 self.gui.set_state(2) # PROCESSING (Yellow) - indicating we hear you
+
+        def on_response_done(self):
+            # Called when AI finishes a response
+            print("Response done")
+            self.response_in_progress = False
+            self.last_interaction_time = time.time()
 
         def audio_input_callback(self, in_data):
             if self.state == STATE_IDLE:
@@ -147,6 +157,7 @@ if __name__ == "__main__":
             # Enqueue for playback
             # print(f"Received Audio Chunk: {len(audio_bytes)} bytes")
             self.last_interaction_time = time.time() # Reset timer on receiving content
+            self.response_in_progress = True
             self.audio_queue.put_nowait(audio_bytes)
 
         def handle_user_transcript(self, text):

@@ -5,12 +5,13 @@ import base64
 from config import OPENAI_API_KEY, REALTIME_URL, REALTIME_MODEL
 
 class RealtimeClient:
-    def __init__(self, on_audio_delta=None, on_user_transcript=None, on_agent_transcript=None, on_speech_started=None):
+    def __init__(self, on_audio_delta=None, on_user_transcript=None, on_agent_transcript=None, on_speech_started=None, on_response_done=None):
         self.ws = None
         self.on_audio_delta = on_audio_delta
         self.on_user_transcript = on_user_transcript
         self.on_agent_transcript = on_agent_transcript
         self.on_speech_started = on_speech_started
+        self.on_response_done = on_response_done
         self.session_id = None
 
     async def connect(self):
@@ -77,7 +78,7 @@ class RealtimeClient:
                 elif event_type == "input_audio_buffer.speech_started":
                     if self.on_speech_started:
                         self.on_speech_started()
-                
+
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     if self.on_user_transcript:
                         self.on_user_transcript(data.get("transcript"))
@@ -85,7 +86,11 @@ class RealtimeClient:
                 elif event_type == "response.audio_transcript.done":
                     if self.on_agent_transcript:
                         self.on_agent_transcript(data.get("transcript"))
-                        
+
+                elif event_type == "response.done":
+                    if self.on_response_done:
+                        self.on_response_done()
+
                 elif event_type == "error":
                     print(f"Realtime API Error: {data}")
 
