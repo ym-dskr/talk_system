@@ -17,6 +17,20 @@ Thumbs.db
 # Logs
 *.log
 
+# Asset and Model Files
+# デフォルトで.ppn, .pv, .pngファイルを除外し、必須ファイルのみGit管理に含める
 *.ppn
 *.pv
 *.png
+
+# 必須アセットを明示的にGit管理に含める
+!assets/char_closed.png
+!assets/char_open.png
+!assets/character/**/*.png
+
+# 必須モデルファイルを明示的にGit管理に含める
+!model/kikaikun_ja_raspberry-pi_v4_0_0.ppn
+!model/porcupine_params_ja.pv
+
+# Service file (install script generates this)
+kikai-kun.service
