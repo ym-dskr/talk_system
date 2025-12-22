@@ -1,0 +1,17 @@
+[project]
+name = "talk-system"
+version = "0.1.0"
+description = "A real-time voice interaction system with character animation"
+dependencies = [
+    "pvporcupine",
+    "pyaudio",
+    "websockets",
+    "pygame",
+    "aiohttp",
+    "numpy",
+    "python-dotenv",
+    "tavily-python",
+]
+
+[tool.uv]
+managed = true

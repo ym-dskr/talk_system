@@ -1,7 +1,0 @@
-pvporcupine
-pyaudio
-websockets
-pygame
-aiohttp
-numpy
-python-dotenv

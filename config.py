@@ -59,3 +59,8 @@ OUTPUT_DEVICE_NAME = os.getenv("OUTPUT_DEVICE_NAME")
 # ================================================================================
 REALTIME_MODEL = "gpt-4o-mini-realtime-preview"
 REALTIME_URL = "wss://api.openai.com/v1/realtime"
+
+# ================================================================================
+# Tavily Search API設定
+# ================================================================================
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")

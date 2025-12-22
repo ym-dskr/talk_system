@@ -83,7 +83,7 @@ class ConversationApp:
         self.last_interaction_time = time.time()  # 最後の操作時刻（タイムアウト判定用）
         self.response_in_progress = False       # AI応答処理中フラグ
         self.interrupt_active = False           # 割り込み中フラグ（音声受信を無視）
-        self.inactivity_timeout = 15.0          # 無操作タイムアウト（15秒）
+        self.inactivity_timeout = 60.0          # 無操作タイムアウト（60秒）
         self.connection_time = 0                # API接続時刻（ノイズ除外用）
 
     async def run(self):
@@ -237,6 +237,7 @@ class ConversationApp:
 
         self.response_in_progress = False
         self.is_playing_response = False
+        self.gui.reset_texts()  # 🆕 GUI側のテキスト表示を即座にリセット
         self.gui.set_state(2)  # PROCESSING（考え中）
         print("[BARGE-IN] Interrupt complete")
 
@@ -291,15 +292,24 @@ class ConversationApp:
     def handle_user_transcript(self, text):
         """
         ユーザー発話テキスト受信コールバック
-
-        OpenAI Realtime APIから受信したユーザー発話のトランスクリプトを
-        GUIに表示します。
-
-        Args:
-            text (str): ユーザー発話のテキスト
         """
         print(f"User: {text}")
         self.gui.set_user_text(text)
+
+        # 🆕 終了キーワードのチェック
+        exit_keywords = ["ストップ", "おわり", "終わり", "終了", "バイバイ", "さようなら", "またね"]
+        if any(kw in text for kw in exit_keywords):
+            print(f"[EXIT] Exit keyword detected in user speech: {text}")
+            # AIが最後に応答する時間を少しだけ確保してから終了するようにスケジュール
+            asyncio.create_task(self.delayed_exit(2.0))
+
+    async def delayed_exit(self, delay):
+        """
+        指定秒数後にアプリを終了する
+        """
+        await asyncio.sleep(delay)
+        print("[EXIT] Exiting application by voice command.")
+        self.gui.running = False
 
     def handle_agent_transcript(self, text):
         """

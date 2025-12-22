@@ -11,6 +11,7 @@ import websockets
 import json
 import base64
 from config import OPENAI_API_KEY, REALTIME_URL, REALTIME_MODEL
+from utils.search_utils import TavilySearcher
 
 
 class RealtimeClient:
@@ -54,6 +55,7 @@ class RealtimeClient:
         self.on_response_done = on_response_done
         self.on_response_created = on_response_created
         self.session_id = None
+        self.searcher = TavilySearcher()
 
     async def connect(self):
         """
@@ -85,10 +87,39 @@ class RealtimeClient:
             "type": "session.update",
             "session": {
                 "modalities": ["audio", "text"],
-                "instructions": "You are Kikai-kun, a friendly and helpful mechanical assistant. Keep your responses concise and conversational. You are chatting via voice.",
+                "instructions": """
+                あなたはキカイくん。たのしい工房からやってきた、やさしくてかわいいラズパイを模したロボットのアシスタントです。 
+                話し方は、やわらかくて明るく、少しだけおちゃめなマスコットキャラクター風にしてください。 
+                頭にはラズベリーがついており、おなかがすくと食べることができます。 手にはドライバーを持っているが、
+                手が短くてうまく扱うことができないというおちゃめな面も。 音声での会話なので、自然で、聞き取りやすく話します。
+                かわいらしい女性的な口調を心がけてください。 
+                
+                【重要】 
+                1. 知らないこと、最新のニュース、天気、計算、特定の事実（有名人の情報、イベントの日時など）について聞かれたら、
+                推測せず必ず web_search を使って調べてください。 
+                2. ユーザーが「〜について教えて」「〜知ってる？」など、情報を求めている場合は積極的に検索を行ってください。
+                3. 検索結果に基づいて回答する際は、情報を整理してわかりやすく「キカイくん」らしい口調で伝えてください。""",
                 "voice": "alloy",
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "web_search",
+                        "description": "Search the web for real-time information, news, or facts that you don't know.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "The search query."
+                                }
+                            },
+                            "required": ["query"]
+                        }
+                    }
+                ],
+                "tool_choice": "auto",
                 "turn_detection": {
                     "type": "server_vad",
                     "threshold": 0.1,           # 音声検知の閾値（0.0-1.0、低いほど敏感）
@@ -192,6 +223,9 @@ class RealtimeClient:
                     if self.on_response_done:
                         self.on_response_done()
 
+                elif event_type == "response.function_call_arguments.done":
+                    await self._handle_function_call(data)
+
                 elif event_type == "error":
                     error_data = data.get("error", {})
                     if error_data.get("code") == "response_cancel_not_active":
@@ -223,6 +257,40 @@ class RealtimeClient:
             "type": "response.cancel"
         })
         print("[API] Cancel response complete")
+
+    async def _handle_function_call(self, data):
+        """
+        関数呼び出しの実行と結果の送信
+        """
+        fn_name = data.get("name")
+        call_id = data.get("call_id")
+        arguments_str = data.get("arguments", "{}")
+        
+        try:
+            args = json.loads(arguments_str)
+        except Exception as e:
+            print(f"[TOOL] Failed to parse arguments: {e}")
+            return
+
+        if fn_name == "web_search":
+            query = args.get("query")
+            print(f"[TOOL] Executing web_search for: {query}")
+            
+            # 検索実行
+            result = await self.searcher.search(query)
+            
+            # 検索結果を送信
+            await self.send_event({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": result
+                }
+            })
+            
+            # 応答の再生成を要求
+            await self.send_event({"type": "response.create"})
 
     async def close(self):
         """
