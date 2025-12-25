@@ -41,6 +41,33 @@ class CharacterRenderer:
         # 全アセットを読み込み
         self._load_assets()
 
+    def _apply_transform(self, surface, offset_x=0, offset_y=0, rotation=0, scale=1.0):
+        """
+        サーフェスに変換（移動・回転・スケール）を適用
+
+        Args:
+            surface (pygame.Surface): 元のサーフェス
+            offset_x (float): X方向のオフセット（ピクセル）
+            offset_y (float): Y方向のオフセット（ピクセル）
+            rotation (float): 回転角度（度）
+            scale (float): スケール倍率
+
+        Returns:
+            tuple: (変換済みサーフェス, 描画位置のオフセット)
+        """
+        # スケール適用
+        if scale != 1.0:
+            new_w = int(surface.get_width() * scale)
+            new_h = int(surface.get_height() * scale)
+            surface = pygame.transform.smoothscale(surface, (new_w, new_h))
+
+        # 回転適用（中心を軸に回転）
+        if rotation != 0:
+            surface = pygame.transform.rotate(surface, rotation)
+
+        # オフセットは描画時に適用
+        return surface, (offset_x, offset_y)
+
     def _load_assets(self):
         """
         キャラクターの全レイヤーをメモリに読み込んでキャッシュ
@@ -115,46 +142,75 @@ class CharacterRenderer:
             surf.fill((0, 0, 0, 0))
             self.cache[key] = surf
 
-    def compose(self, mouth_state='closed', eye_state='normal'):
+    def compose(self, mouth_state='closed', eye_state='normal',
+                body_transform=None, hand_transform=None):
         """
         キャラクターレイヤーを1枚のサーフェスに合成
 
-        指定された口と目の状態に応じて、各レイヤーを
-        重ね合わせて最終的なキャラクター画像を生成します。
+        指定された口と目の状態、体と手の変換パラメータに応じて、
+        各レイヤーを重ね合わせて最終的なキャラクター画像を生成します。
 
         Args:
             mouth_state (str): 使用する口の状態
-                - 'closed': 口を閉じている
-                - 'small_open': 少し開いている
-                - 'medium_open': 中程度に開いている
-                - 'wide_open': 大きく開いている
             eye_state (str): 使用する目の状態
-                - 'normal': 通常（目を開いている）
-                - 'blink_half': 半目
-                - 'blink_closed': 目を閉じている
+            body_transform (dict, optional): 体の変換パラメータ
+                - 'offset_x': 横方向のオフセット
+                - 'offset_y': 縦方向のオフセット
+                - 'rotation': 回転角度
+                - 'scale': スケール倍率
+            hand_transform (dict, optional): 手の変換パラメータ（未実装）
 
         Returns:
             pygame.Surface: 合成されたキャラクター画像
         """
-        # 合成用の透明なサーフェスを作成
-        composed = pygame.Surface(self.target_size, pygame.SRCALPHA)
-        composed.fill((0, 0, 0, 0))
+        # デフォルト変換パラメータ
+        if body_transform is None:
+            body_transform = {
+                'offset_x': 0, 'offset_y': 0,
+                'rotation': 0, 'scale': 1.0
+            }
 
-        # レイヤー1: ベース（体）- 常に表示
+        # 体の変換を適用した合成サーフェスを作成
+        # まず、元のサイズでレイヤーを合成
+        base_composed = pygame.Surface(self.target_size, pygame.SRCALPHA)
+        base_composed.fill((0, 0, 0, 0))
+
+        # レイヤー1: ベース（体）
         if 'base' in self.cache:
-            composed.blit(self.cache['base'], (0, 0))
+            base_composed.blit(self.cache['base'], (0, 0))
 
         # レイヤー2: 目
         eye_key = f'eye_{eye_state}'
         if eye_key in self.cache:
-            composed.blit(self.cache[eye_key], (0, 0))
+            base_composed.blit(self.cache[eye_key], (0, 0))
 
         # レイヤー3: 口
         mouth_key = f'mouth_{mouth_state}'
         if mouth_key in self.cache:
-            composed.blit(self.cache[mouth_key], (0, 0))
+            base_composed.blit(self.cache[mouth_key], (0, 0))
 
-        return composed
+        # 体の変換を適用
+        transformed, offset = self._apply_transform(
+            base_composed,
+            body_transform.get('offset_x', 0),
+            body_transform.get('offset_y', 0),
+            body_transform.get('rotation', 0),
+            body_transform.get('scale', 1.0)
+        )
+
+        # 変換後のサイズに合わせて最終合成サーフェスを作成
+        # 回転やスケールで大きくなる可能性があるため、余裕を持たせる
+        final_w = max(self.target_size[0], transformed.get_width()) + 100
+        final_h = max(self.target_size[1], transformed.get_height()) + 100
+        final_composed = pygame.Surface((final_w, final_h), pygame.SRCALPHA)
+        final_composed.fill((0, 0, 0, 0))
+
+        # 中央に配置（オフセット適用）
+        center_x = final_w // 2 - transformed.get_width() // 2 + int(offset[0])
+        center_y = final_h // 2 - transformed.get_height() // 2 + int(offset[1])
+        final_composed.blit(transformed, (center_x, center_y))
+
+        return final_composed
 
     def get_size(self):
         """

@@ -140,7 +140,7 @@ class GUIHandler:
         # ────────────────────────────────────────────────────────────
         self.state = self.STATE_IDLE  # 初期状態: 待機中
         self.running = True           # GUI実行中フラグ
-        self.clock = pygame.time.Clock()  # 60FPS制御
+        self.clock = pygame.time.Clock()  # 30FPS制御（CPU負荷軽減）
 
         # ────────────────────────────────────────────────────────────
         # 日本語フォント設定
@@ -363,10 +363,10 @@ class GUIHandler:
             )
 
         # ────────────────────────────────────────────────────────────
-        # 画面更新（60FPS）
+        # 画面更新（30FPS - CPU負荷軽減）
         # ────────────────────────────────────────────────────────────
         pygame.display.flip()
-        self.clock.tick(60)
+        self.clock.tick(30)  # 60FPS→30FPSに下げてCPU負荷を軽減
 
     def _split_text_into_pages(self, text, max_width, max_lines):
         """

@@ -75,14 +75,15 @@ class AudioHandler:
         
         print(f"Opening Stream: InputIdx={INPUT_DEVICE_INDEX} (Ch={INPUT_CHANNELS}), OutputIdx={OUTPUT_DEVICE_INDEX} (Ch={OUTPUT_CHANNELS}), Rate={self.hw_rate} (Resampling from {self.target_rate})")
 
-        # Output Stream
+        # Output Stream（バッファサイズを大きくして音飛びを防止）
         try:
             self.output_stream = self.p.open(
                 format=pyaudio.paInt16,
                 channels=OUTPUT_CHANNELS,
                 rate=self.hw_rate,
                 output=True,
-                output_device_index=OUTPUT_DEVICE_INDEX
+                output_device_index=OUTPUT_DEVICE_INDEX,
+                frames_per_buffer=chunk * 4  # バッファサイズを4倍に増やして安定化
             )
         except Exception as e:
             print(f"Failed to open output stream: {e}")
@@ -95,7 +96,7 @@ class AudioHandler:
                 channels=INPUT_CHANNELS,
                 rate=self.hw_rate,
                 input=True,
-                frames_per_buffer=chunk * 2, # Buffer needs to be larger for higher rate? Rough approx.
+                frames_per_buffer=chunk * 3,  # 入力バッファも増やす
                 input_device_index=INPUT_DEVICE_INDEX
             )
         except Exception as e:
@@ -136,11 +137,8 @@ class AudioHandler:
         """
         import audioop
         print("Starting Record Loop")
-        loop_counter = 0
+        # ループカウンターは削除（パフォーマンス向上）
         while self._running:
-            loop_counter += 1
-            if loop_counter % 1000 == 0:  # 1000回ごとにログ出力
-                print(f"[RECORD] Record loop active (iteration #{loop_counter})")
             if self.input_stream.get_read_available() >= self.chunk_size:
                 data = self.input_stream.read(self.chunk_size, exception_on_overflow=False)
                 
@@ -194,7 +192,8 @@ class AudioHandler:
                         print(f"Error upmixing audio: {e}")
                 
                 try:
-                    print(f"Playing chunk: {len(audio_chunk)} bytes")
+                    # ログ出力を削減（パフォーマンス向上）
+                    # print(f"Playing chunk: {len(audio_chunk)} bytes")
                     self.output_stream.write(audio_chunk)
                 except Exception as e:
                     print(f"[AUDIO] Write error (possibly interrupted): {e}")

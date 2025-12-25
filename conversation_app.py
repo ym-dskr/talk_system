@@ -85,7 +85,7 @@ class ConversationApp:
         self.last_interaction_time = time.time()  # 最後の操作時刻（タイムアウト判定用）
         self.response_in_progress = False       # AI応答処理中フラグ
         self.interrupt_active = False           # 割り込み中フラグ（音声受信を無視）
-        self.inactivity_timeout = 60.0          # 無操作タイムアウト（60秒）
+        self.inactivity_timeout = 180.0         # 無操作タイムアウト（180秒 = 3分）
         self.connection_time = 0                # API接続時刻（ノイズ除外用）
 
         # ローカルウェイクワード検知（割り込み用）
@@ -160,14 +160,13 @@ class ConversationApp:
                 if self.is_playing_response:
                     self.is_playing_response = False
                     self.gui.set_state(1)  # Back to LISTENING
-                    print("[PLAYBACK] All audio chunks played, back to LISTENING")
+                    print("[PLAYBACK] Back to LISTENING")
 
                     # 音声再生完了後、Turn Detectionを再有効化してユーザー音声を検知可能にする
                     asyncio.create_task(self.client.enable_turn_detection())
 
                     # ローカルウェイクワード検知を無効化
                     self.local_interrupt_enabled = False
-                    print("[LOCAL-INTERRUPT] Local wake word detection disabled")
 
             await asyncio.sleep(0.001)  # イベントループに制御を返す
 
@@ -193,12 +192,12 @@ class ConversationApp:
             loop = asyncio.get_running_loop()
             loop.create_task(self.client.send_audio(in_data))
 
-            # デバッグ: マイク入力送信を定期的にログ出力
-            if not hasattr(self, '_input_counter'):
-                self._input_counter = 0
-            self._input_counter += 1
-            if self._input_counter % 100 == 0:  # 100チャンクごとに出力
-                print(f"[MIC] Sending audio to API (chunk #{self._input_counter}, {len(in_data)} bytes)")
+            # デバッグログは削除（パフォーマンス向上）
+            # if not hasattr(self, '_input_counter'):
+            #     self._input_counter = 0
+            # self._input_counter += 1
+            # if self._input_counter % 100 == 0:  # 100チャンクごとに出力
+            #     print(f"[MIC] Sending audio to API (chunk #{self._input_counter}, {len(in_data)} bytes)")
 
             # ================================================================================
             # ローカルウェイクワード検知（AI応答中のみ）
@@ -223,7 +222,7 @@ class ConversationApp:
                     # Porcupineでウェイクワード検知
                     keyword_index = self.wake_word.process(frame)
                     if keyword_index >= 0:
-                        print("[LOCAL-INTERRUPT] Local wake word 'Kikai-kun' detected during AI response!")
+                        print("[WAKE-WORD] Detected - interrupting")
                         # 割り込み処理を実行
                         self.execute_interrupt()
 
@@ -244,10 +243,8 @@ class ConversationApp:
         """
         # 接続直後2秒間はノイズとして無視
         if time.time() - self.connection_time < 2.0:
-            print("[SPEECH-START] Ignoring noise during connection startup")
             return
 
-        print("[SPEECH-START] User speech detected (no auto-interrupt)")
         self.last_interaction_time = time.time()  # タイムアウトリセット
 
     def on_response_created(self):
@@ -264,10 +261,9 @@ class ConversationApp:
         ローカルウェイクワード検知を有効化し、「きかいくん」で
         割り込み可能にします。
         """
-        print("Response created (generation started)")
+        print("[RESPONSE] AI response started")
         self.response_in_progress = True
         self.interrupt_active = False  # 新しい応答開始、割り込みフラグをリセット
-        print("[RESPONSE] Interrupt flag cleared - accepting new audio")
         self.last_interaction_time = time.time()  # タイムアウトリセット
 
         # AI応答中はユーザーの音声を検知しないよう、Turn Detectionを無効化
@@ -277,7 +273,6 @@ class ConversationApp:
         self.local_interrupt_enabled = True
         self.wake_word_buffer = []              # バッファをクリア
         self.wake_word_resample_state = None    # リサンプリング状態をリセット
-        print("[LOCAL-INTERRUPT] Local wake word detection enabled")
 
     def on_response_done(self):
         """
@@ -307,7 +302,6 @@ class ConversationApp:
 
         # 割り込み中は音声チャンクを破棄
         if self.interrupt_active:
-            print(f"[AUDIO] Ignoring audio chunk during interrupt ({len(audio_bytes)} bytes)")
             return
 
         # Note: response_in_progress は on_response_created で管理される
@@ -320,34 +314,24 @@ class ConversationApp:
         AI応答中にユーザーが特定のキーワードを発話した際に呼ばれます。
         音声キューのクリア、音声再生停止、APIへのキャンセル送信を行います。
         """
-        print("[KEYWORD-INTERRUPT] Executing keyword-based interrupt")
+        print("[INTERRUPT] Executing interrupt")
 
         # 割り込みフラグを立てる（新しい音声チャンクを拒否）
         self.interrupt_active = True
-        print("[KEYWORD-INTERRUPT] Interrupt flag set - will ignore incoming audio")
 
         # 音声キューをクリア
-        queue_size = self.audio_queue.qsize()
-        if queue_size > 0:
-            print(f"[KEYWORD-INTERRUPT] Clearing audio queue ({queue_size} chunks)")
-            while not self.audio_queue.empty():
-                try:
-                    self.audio_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-        else:
-            print("[KEYWORD-INTERRUPT] Audio queue already empty")
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
         # 音声再生を停止
-        print("[KEYWORD-INTERRUPT] Forcing audio playback stop")
         self.audio.stop_playback()
 
         # Realtime APIに中断を通知
         if self.response_in_progress:
-            print(f"[KEYWORD-INTERRUPT] Sending cancel (in_progress={self.response_in_progress}, is_playing={self.is_playing_response})")
             asyncio.create_task(self.client.cancel_response())
-        else:
-            print("[KEYWORD-INTERRUPT] No active response to cancel on server")
 
         self.response_in_progress = False
         self.is_playing_response = False
@@ -356,11 +340,10 @@ class ConversationApp:
 
         # ローカルウェイクワード検知を無効化（割り込み完了）
         self.local_interrupt_enabled = False
-        print("[LOCAL-INTERRUPT] Local wake word detection disabled")
 
         # 割り込み後、Turn Detectionを再有効化してユーザーの次の発話を受け付ける
         asyncio.create_task(self.client.enable_turn_detection())
-        print("[KEYWORD-INTERRUPT] Interrupt complete")
+        print("[INTERRUPT] Complete")
 
     def handle_user_transcript(self, text):
         """
