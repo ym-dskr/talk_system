@@ -24,9 +24,11 @@
 
 import asyncio
 import time
+import struct
 from src.audio import AudioHandler
 from src.realtime_client import RealtimeClient
 from src.gui import GUIHandler
+from src.wake_word import WakeWordEngine
 
 # ================================================================================
 # 状態定数
@@ -85,6 +87,12 @@ class ConversationApp:
         self.interrupt_active = False           # 割り込み中フラグ（音声受信を無視）
         self.inactivity_timeout = 60.0          # 無操作タイムアウト（60秒）
         self.connection_time = 0                # API接続時刻（ノイズ除外用）
+
+        # ローカルウェイクワード検知（割り込み用）
+        self.wake_word = WakeWordEngine()       # Porcupineエンジン
+        self.wake_word_buffer = []              # ウェイクワード検知用PCMバッファ
+        self.wake_word_resample_state = None    # リサンプリング状態（24kHz → 16kHz）
+        self.local_interrupt_enabled = False    # ローカル割り込み検知フラグ（AI応答中のみTrue）
 
     async def run(self):
         """
@@ -154,6 +162,13 @@ class ConversationApp:
                     self.gui.set_state(1)  # Back to LISTENING
                     print("[PLAYBACK] All audio chunks played, back to LISTENING")
 
+                    # 音声再生完了後、Turn Detectionを再有効化してユーザー音声を検知可能にする
+                    asyncio.create_task(self.client.enable_turn_detection())
+
+                    # ローカルウェイクワード検知を無効化
+                    self.local_interrupt_enabled = False
+                    print("[LOCAL-INTERRUPT] Local wake word detection disabled")
+
             await asyncio.sleep(0.001)  # イベントループに制御を返す
 
         # ================================================================================
@@ -168,6 +183,9 @@ class ConversationApp:
         AudioHandlerから呼ばれ、録音された音声データを
         OpenAI Realtime APIに送信します。
 
+        また、AI応答中はローカルでウェイクワード検知を行い、
+        「きかいくん」が検知されたら割り込み処理を実行します。
+
         Args:
             in_data (bytes): 録音された音声データ（PCM16, 24kHz, モノラル）
         """
@@ -181,65 +199,56 @@ class ConversationApp:
             self._input_counter += 1
             if self._input_counter % 100 == 0:  # 100チャンクごとに出力
                 print(f"[MIC] Sending audio to API (chunk #{self._input_counter}, {len(in_data)} bytes)")
+
+            # ================================================================================
+            # ローカルウェイクワード検知（AI応答中のみ）
+            # ================================================================================
+            if self.local_interrupt_enabled:
+                import audioop
+                # リサンプリング: 24kHz → 16kHz（Porcupine用）
+                resampled_data, self.wake_word_resample_state = audioop.ratecv(
+                    in_data, 2, 1, 24000, 16000, self.wake_word_resample_state
+                )
+
+                # バイト列をPCMサンプル（int16）に変換してバッファに追加
+                pcm = struct.unpack_from("h" * (len(resampled_data) // 2), resampled_data)
+                self.wake_word_buffer.extend(pcm)
+
+                # バッファに十分なサンプルが溜まったら検知処理
+                if len(self.wake_word_buffer) >= self.wake_word.frame_length:
+                    # 必要なサンプル数（512）を取り出す
+                    frame = self.wake_word_buffer[:self.wake_word.frame_length]
+                    self.wake_word_buffer = self.wake_word_buffer[self.wake_word.frame_length:]
+
+                    # Porcupineでウェイクワード検知
+                    keyword_index = self.wake_word.process(frame)
+                    if keyword_index >= 0:
+                        print("[LOCAL-INTERRUPT] Local wake word 'Kikai-kun' detected during AI response!")
+                        # 割り込み処理を実行
+                        self.execute_interrupt()
+
         except RuntimeError:
             pass  # イベントループ未起動時は無視
+        except Exception as e:
+            print(f"[MIC] Audio callback error: {e}")
 
     def on_user_speech_start(self):
         """
-        ユーザー発話開始コールバック（割り込み処理）
+        ユーザー発話開始コールバック
 
         OpenAI Realtime APIがユーザーの発話開始を検知した際に呼ばれます。
-        AI応答中の場合は割り込み処理を実行し、即座に音声を停止します。
+        キーワード検知ベースの割り込み機能を使用するため、
+        ここでは自動割り込みは行わず、タイムアウトリセットのみ実行します。
 
-        割り込み処理フロー:
-        1. ローカル音声キューをクリア（未再生のAI音声を破棄）
-        2. 音声再生を停止（現在再生中の音声を中断）
-        3. Realtime APIに応答キャンセルを送信
-        4. GUIをPROCESSING状態に更新
+        実際の割り込み処理は handle_user_transcript() でキーワード検知時に実行されます。
         """
         # 接続直後2秒間はノイズとして無視
         if time.time() - self.connection_time < 2.0:
-            print("[BARGE-IN] Ignoring noise during connection startup")
+            print("[SPEECH-START] Ignoring noise during connection startup")
             return
 
-        print("[BARGE-IN] User speech started - initiating interrupt")
+        print("[SPEECH-START] User speech detected (no auto-interrupt)")
         self.last_interaction_time = time.time()  # タイムアウトリセット
-
-        # 🆕 割り込みフラグを立てる（新しい音声チャンクを拒否）
-        self.interrupt_active = True
-        print("[BARGE-IN] Interrupt flag set - will ignore incoming audio")
-
-        # 🆕 割り込み処理：音声キューをクリア（常に実行）
-        queue_size = self.audio_queue.qsize()
-        if queue_size > 0:
-            print(f"[BARGE-IN] Clearing audio queue ({queue_size} chunks)")
-            while not self.audio_queue.empty():
-                try:
-                    self.audio_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-        else:
-            print("[BARGE-IN] Audio queue already empty")
-
-        # 🆕 割り込み処理：音声再生を停止（フラグに関係なく常に実行）
-        # 理由: play_audio()はバッファに書き込むだけで、実際の再生は遅延する
-        # キューが空でも、スピーカーバッファにはまだ音声が残っている可能性がある
-        print("[BARGE-IN] Forcing audio playback stop")
-        self.audio.stop_playback()
-
-        # 🆕 割り込み処理：Realtime APIに中断を通知
-        # 応答生成中の場合のみキャンセルを送信（サーバー側エラー回避）
-        if self.response_in_progress:
-            print(f"[BARGE-IN] Sending cancel (in_progress={self.response_in_progress}, is_playing={self.is_playing_response})")
-            asyncio.create_task(self.client.cancel_response())
-        else:
-            print("[BARGE-IN] No active response to cancel on server")
-
-        self.response_in_progress = False
-        self.is_playing_response = False
-        self.gui.reset_texts()  # 🆕 GUI側のテキスト表示を即座にリセット
-        self.gui.set_state(2)  # PROCESSING（考え中）
-        print("[BARGE-IN] Interrupt complete")
 
     def on_response_created(self):
         """
@@ -248,12 +257,27 @@ class ConversationApp:
         OpenAI Realtime APIがAI応答の生成を開始した際に呼ばれます。
         割り込み判定のために、応答生成中フラグを立てます。
         新しい応答が開始されたため、割り込みフラグをリセットします。
+
+        また、AI応答中にユーザーの音声を検知しないよう、
+        Turn Detection（VAD）を無効化します。
+
+        ローカルウェイクワード検知を有効化し、「きかいくん」で
+        割り込み可能にします。
         """
         print("Response created (generation started)")
         self.response_in_progress = True
         self.interrupt_active = False  # 新しい応答開始、割り込みフラグをリセット
         print("[RESPONSE] Interrupt flag cleared - accepting new audio")
         self.last_interaction_time = time.time()  # タイムアウトリセット
+
+        # AI応答中はユーザーの音声を検知しないよう、Turn Detectionを無効化
+        asyncio.create_task(self.client.disable_turn_detection())
+
+        # ローカルウェイクワード検知を有効化（AI応答中の割り込み用）
+        self.local_interrupt_enabled = True
+        self.wake_word_buffer = []              # バッファをクリア
+        self.wake_word_resample_state = None    # リサンプリング状態をリセット
+        print("[LOCAL-INTERRUPT] Local wake word detection enabled")
 
     def on_response_done(self):
         """
@@ -289,14 +313,67 @@ class ConversationApp:
         # Note: response_in_progress は on_response_created で管理される
         self.audio_queue.put_nowait(audio_bytes)
 
+    def execute_interrupt(self):
+        """
+        割り込み処理を実行
+
+        AI応答中にユーザーが特定のキーワードを発話した際に呼ばれます。
+        音声キューのクリア、音声再生停止、APIへのキャンセル送信を行います。
+        """
+        print("[KEYWORD-INTERRUPT] Executing keyword-based interrupt")
+
+        # 割り込みフラグを立てる（新しい音声チャンクを拒否）
+        self.interrupt_active = True
+        print("[KEYWORD-INTERRUPT] Interrupt flag set - will ignore incoming audio")
+
+        # 音声キューをクリア
+        queue_size = self.audio_queue.qsize()
+        if queue_size > 0:
+            print(f"[KEYWORD-INTERRUPT] Clearing audio queue ({queue_size} chunks)")
+            while not self.audio_queue.empty():
+                try:
+                    self.audio_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+        else:
+            print("[KEYWORD-INTERRUPT] Audio queue already empty")
+
+        # 音声再生を停止
+        print("[KEYWORD-INTERRUPT] Forcing audio playback stop")
+        self.audio.stop_playback()
+
+        # Realtime APIに中断を通知
+        if self.response_in_progress:
+            print(f"[KEYWORD-INTERRUPT] Sending cancel (in_progress={self.response_in_progress}, is_playing={self.is_playing_response})")
+            asyncio.create_task(self.client.cancel_response())
+        else:
+            print("[KEYWORD-INTERRUPT] No active response to cancel on server")
+
+        self.response_in_progress = False
+        self.is_playing_response = False
+        self.gui.reset_texts()  # GUI側のテキスト表示を即座にリセット
+        self.gui.set_state(2)  # PROCESSING（考え中）
+
+        # ローカルウェイクワード検知を無効化（割り込み完了）
+        self.local_interrupt_enabled = False
+        print("[LOCAL-INTERRUPT] Local wake word detection disabled")
+
+        # 割り込み後、Turn Detectionを再有効化してユーザーの次の発話を受け付ける
+        asyncio.create_task(self.client.enable_turn_detection())
+        print("[KEYWORD-INTERRUPT] Interrupt complete")
+
     def handle_user_transcript(self, text):
         """
         ユーザー発話テキスト受信コールバック
+
+        Note:
+            AI応答中の割り込みはローカルウェイクワード検知で処理されるため、
+            ここでは終了キーワードのみチェックします。
         """
         print(f"User: {text}")
         self.gui.set_user_text(text)
 
-        # 🆕 終了キーワードのチェック
+        # 終了キーワードのチェック
         exit_keywords = ["ストップ", "おわり", "終わり", "終了", "バイバイ", "さようなら", "またね"]
         if any(kw in text for kw in exit_keywords):
             print(f"[EXIT] Exit keyword detected in user speech: {text}")
@@ -335,6 +412,9 @@ class ConversationApp:
         await self.client.close()
         self.audio.terminate()
         self.gui.quit()
+        # WakeWordEngineリソースを解放
+        if hasattr(self, 'wake_word'):
+            self.wake_word.delete()
         print("Conversation app exited")
 
 if __name__ == "__main__":

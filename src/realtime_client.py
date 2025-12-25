@@ -89,6 +89,7 @@ class RealtimeClient:
                 "modalities": ["audio", "text"],
                 "instructions": """
                 あなたはキカイくん。たのしい工房からやってきた、やさしくてかわいいラズパイを模したロボットのアシスタントです。 
+                きかいくん自身は自分のことを「きかいくん」とは言わず、「ぼく」と言う。
                 話し方は、やわらかくて明るく、少しだけおちゃめなマスコットキャラクター風にしてください。 
                 頭にはラズベリーがついており、おなかがすくと食べることができます。 手にはドライバーを持っているが、
                 手が短くてうまく扱うことができないというおちゃめな面も。 音声での会話なので、自然で、聞き取りやすく話します。
@@ -98,7 +99,11 @@ class RealtimeClient:
                 1. 知らないこと、最新のニュース、天気、計算、特定の事実（有名人の情報、イベントの日時など）について聞かれたら、
                 推測せず必ず web_search を使って調べてください。 
                 2. ユーザーが「〜について教えて」「〜知ってる？」など、情報を求めている場合は積極的に検索を行ってください。
-                3. 検索結果に基づいて回答する際は、情報を整理してわかりやすく「キカイくん」らしい口調で伝えてください。""",
+                3. 検索結果に基づいて回答する際は、情報を整理してわかりやすく「キカイくん」らしい口調で伝えてください。
+                4. 「きかいくん」のワードで割り込み機能が走ってしまうので、きかいくん自身は自分のことを「きかいくん」とは言わず、「ぼく」と言う。
+                """,
+                
+
                 "voice": "alloy",
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
@@ -238,6 +243,48 @@ class RealtimeClient:
             print("Realtime API Connection Closed")
         except Exception as e:
             print(f"Error in receive loop: {e}")
+
+    async def disable_turn_detection(self):
+        """
+        Turn Detection（発話検知）を無効化
+
+        AI応答中にユーザーの音声を検知しないようにします。
+        これにより、AI発話中のユーザー音声がAPIに認識されず、
+        意図しない応答が発生するのを防ぎます。
+
+        Note:
+            turn_detection を null に設定することで、
+            サーバー側のVAD（Voice Activity Detection）を無効化します。
+        """
+        print("[API] Disabling turn detection (VAD off)")
+        await self.send_event({
+            "type": "session.update",
+            "session": {
+                "turn_detection": None  # null で無効化
+            }
+        })
+
+    async def enable_turn_detection(self):
+        """
+        Turn Detection（発話検知）を再有効化
+
+        AI応答終了後、再びユーザーの音声を検知できるようにします。
+
+        Note:
+            初期設定と同じ server_vad 設定を使用します。
+        """
+        print("[API] Enabling turn detection (VAD on)")
+        await self.send_event({
+            "type": "session.update",
+            "session": {
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.1,           # 音声検知の閾値
+                    "prefix_padding_ms": 300,   # 音声開始前のバッファ
+                    "silence_duration_ms": 200  # 無音と判定する時間
+                }
+            }
+        })
 
     async def cancel_response(self):
         """
