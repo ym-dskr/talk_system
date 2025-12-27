@@ -4,6 +4,27 @@ OpenAI Realtime APIクライアント
 WebSocket経由でOpenAI Realtime API（gpt-4o-mini-realtime-preview）に接続し、
 リアルタイム音声対話を実現します。音声データの送受信、トランスクリプト取得、
 イベント処理をコールバックベースで管理します。
+
+並行処理の責務:
+このモジュールは**asyncioイベントループ**で実行されます。
+WebSocket通信、イベント処理、コールバック実行はすべて非同期I/Oで処理されます。
+
+スレッドモデル:
+1. **asyncioイベントループ** (このモジュールのすべてのメソッド):
+   - WebSocket通信（websockets.connect）
+   - イベント受信ループ（receive_loop）
+   - 音声データ送信（send_audio）
+   - コールバック関数の呼び出し（on_audio_delta, on_user_transcriptなど）
+
+2. **コールバック実行コンテキスト**:
+   - コールバックはasyncioイベントループ内で同期的に実行されます
+   - コールバック内でブロッキング処理を行うとWebSocket通信が停止します
+   - 重い処理はasyncio.create_task()で別タスクとして実行すること
+
+重要な制約:
+- すべてのメソッドは async/await で定義されています
+- コールバック関数は同期関数として定義されています（非同期にしないこと）
+- WebSocket送信はスレッドセーフではないため、asyncio内でのみ実行すること
 """
 
 import asyncio

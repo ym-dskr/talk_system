@@ -20,6 +20,33 @@
 4. AIの応答を音声とテキストで表示
 5. 15秒無操作でアプリ終了
 6. デーモンがウェイクワード検知を再開
+
+並行処理モデル:
+このアプリケーションは3つの実行コンテキストで動作します:
+
+1. **メインスレッド（このファイル）**:
+   - pygameイベントループとGUI更新（60 FPS）
+   - タイムアウト監視とアプリケーションライフサイクル管理
+   - asyncioスレッドの起動と停止
+   - 責務: ユーザーインターフェースとアプリケーション全体の制御
+
+2. **asyncioスレッド**:
+   - WebSocket通信（OpenAI Realtime API）
+   - 音声データの送受信（非同期I/O）
+   - イベント駆動のコールバック処理
+   - 責務: ネットワーク通信とAPIイベント処理
+
+3. **PyAudioコールバックスレッド**:
+   - リアルタイム音声入出力（ハードウェア割り込み駆動）
+   - 音声データのキューイング（queue.Queue経由でスレッド間通信）
+   - 責務: 低レイテンシ音声処理
+
+スレッド間通信:
+- queue.Queue: PyAudioスレッド → asyncioスレッド（音声データ転送）
+- threading.Event: asyncioスレッド → メインスレッド（状態同期）
+- コールバック関数: asyncioスレッド → メインスレッド（イベント通知）
+
+詳細は docs/ARCHITECTURE.md を参照してください。
 """
 
 import asyncio
@@ -130,7 +157,7 @@ class ConversationApp:
 
     async def run(self):
         """
-        アプリケーションのメインループ
+        アプリケーションのメインループ（asyncio event loop内で実行）
 
         OpenAI Realtime APIに接続し、音声入出力とGUI更新を並行処理します。
         無操作タイムアウト（15秒）でアプリケーションを終了します。
@@ -140,6 +167,13 @@ class ConversationApp:
         2. OpenAI APIに接続
         3. メインループ（GUI更新、音声再生、タイムアウト監視）
         4. クリーンアップ
+
+        並行処理構造:
+        - このメソッドはasyncioイベントループで実行されます
+        - pygameのGUI更新（self.gui.update）は同期的に呼び出されます（60 FPS）
+        - WebSocket通信（self.client）はasyncioタスクとして並行実行されます
+        - PyAudio音声処理は別スレッドのコールバックとして並行実行されます
+        - 各処理間の通信はキューとコールバックで行われます
         """
         self.logger.info("Conversation App Started")
 
