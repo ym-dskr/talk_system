@@ -238,6 +238,9 @@ class ConversationApp:
                             self.set_state(AppState.PROCESSING)
                         if self.state == AppState.PROCESSING:
                             self.set_state(AppState.SPEAKING)
+                            # SPEAKING状態に入ったらウェイクワード検知を有効化（割り込み可能）
+                            self.local_interrupt_enabled = True
+                            self.logger.debug("Wake word detection enabled during SPEAKING")
                     self.last_interaction_time = time.time()  # タイムアウトリセット
 
                     chunk = await self.audio_queue.get()
@@ -276,15 +279,20 @@ class ConversationApp:
         AudioHandlerから呼ばれ、録音された音声データを
         OpenAI Realtime APIに送信します。
 
-        また、AI応答中はローカルでウェイクワード検知を行い、
-        「きかいくん」が検知されたら割り込み処理を実行します。
+        SPEAKING中は音声送信を停止し、ウェイクワード検知のみ実行します。
+        ウェイクワード検知時は割り込み処理でLISTENING状態に戻ります。
 
         Args:
             in_data (bytes): 録音された音声データ（PCM16, 24kHz, モノラル）
         """
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(self.client.send_audio(in_data))
+
+            # LISTENING状態の時のみAPIに音声を送信
+            # SPEAKING/PROCESSING中はAPIに送信しない（AIの声を拾うのを防ぐ）
+            # ただし、ウェイクワード検知は継続（割り込み可能）
+            if self.state == AppState.LISTENING:
+                loop.create_task(self.client.send_audio(in_data))
 
             # ================================================================================
             # ローカルウェイクワード検知（AI応答中のみ）
@@ -423,14 +431,16 @@ class ConversationApp:
         self.response_in_progress = False
         self.is_playing_response = False
         self.gui.reset_texts()  # GUI側のテキスト表示を即座にリセット
-        self.set_state(AppState.PROCESSING)
+
+        # ウェイクワード検知後はLISTENING状態に戻る
+        self.set_state(AppState.LISTENING)
 
         # ローカルウェイクワード検知を無効化（割り込み完了）
         self.local_interrupt_enabled = False
 
         # 割り込み後、Turn Detectionを再有効化してユーザーの次の発話を受け付ける
         asyncio.create_task(self.client.enable_turn_detection())
-        self.logger.debug("Interrupt complete")
+        self.logger.debug("Interrupt complete - back to LISTENING")
 
     def handle_user_transcript(self, text):
         """
