@@ -25,17 +25,15 @@
 import asyncio
 import time
 import struct
+import logging
 from src.audio import AudioHandler
 from src.realtime_client import RealtimeClient
 from src.gui import GUIHandler
 from src.wake_word import WakeWordEngine
+from src.state_machine import AppState, StateTransition
 
-# ================================================================================
-# 状態定数
-# ================================================================================
-STATE_LISTENING = "LISTENING"    # 聞いている（緑色インジケーター）
-STATE_PROCESSING = "PROCESSING"  # 考え中（黄色インジケーター）
-STATE_SPEAKING = "SPEAKING"      # 発話中（口パクアニメーション）
+# ロガー設定（Phase 1.2で本格的なロギング設定を導入予定）
+logger = logging.getLogger(__name__)
 
 
 class ConversationApp:
@@ -46,7 +44,7 @@ class ConversationApp:
     アニメーション制御、タイムアウト管理を一元的に行います。
 
     Attributes:
-        state (str): 現在のアプリケーション状態
+        state (AppState): 現在のアプリケーション状態
         gui (GUIHandler): GUI表示とアニメーション管理
         audio (AudioHandler): 音声入出力管理
         client (RealtimeClient): OpenAI Realtime APIクライアント
@@ -65,7 +63,8 @@ class ConversationApp:
         GUI、オーディオハンドラー、Realtime APIクライアントを初期化し、
         各種コールバックを設定します。
         """
-        self.state = STATE_LISTENING
+        self.logger = logging.getLogger(__name__)
+        self.state = AppState.LISTENING
         self.gui = GUIHandler()
         self.audio = AudioHandler()
 
@@ -93,6 +92,39 @@ class ConversationApp:
         self.wake_word_buffer = []              # ウェイクワード検知用PCMバッファ
         self.wake_word_resample_state = None    # リサンプリング状態（24kHz → 16kHz）
         self.local_interrupt_enabled = False    # ローカル割り込み検知フラグ（AI応答中のみTrue）
+
+    def set_state(self, new_state: AppState):
+        """
+        状態遷移（検証付き）
+
+        Args:
+            new_state: 遷移先の状態
+
+        Note:
+            状態遷移が不正な場合は警告ログを出力し、遷移を行いません。
+            GUIの状態表示も自動的に更新されます。
+        """
+        if StateTransition.is_valid_transition(self.state, new_state):
+            old_state = self.state
+            self.state = new_state
+            self.logger.info(f"State transition: {old_state.name} → {new_state.name}")
+
+            # GUIに状態を反映（既存のマッピング）
+            state_map = {
+                AppState.IDLE: 0,
+                AppState.LISTENING: 1,
+                AppState.PROCESSING: 2,
+                AppState.SPEAKING: 3,
+                AppState.ERROR: 0
+            }
+            if new_state in state_map:
+                self.gui.set_state(state_map[new_state])
+        else:
+            allowed = [s.name for s in StateTransition.get_allowed_transitions(self.state)]
+            self.logger.warning(
+                f"Invalid state transition: {self.state.name} → {new_state.name} "
+                f"(allowed: {allowed})"
+            )
 
     async def run(self):
         """
@@ -122,7 +154,7 @@ class ConversationApp:
             await self.client.connect()
             self.connection_time = time.time()  # 接続時刻を記録
             self.last_interaction_time = time.time()
-            self.gui.set_state(1)  # LISTENING（緑色インジケーター）
+            self.set_state(AppState.LISTENING)
             print("Connected to OpenAI Realtime API")
         except Exception as e:
             print(f"Failed to connect: {e}")
@@ -147,7 +179,7 @@ class ConversationApp:
             if not self.audio_queue.empty():
                 if not self.is_playing_response:
                     self.is_playing_response = True
-                    self.gui.set_state(3)  # SPEAKING（口パクアニメーション）
+                    self.set_state(AppState.SPEAKING)
                 self.last_interaction_time = time.time()  # タイムアウトリセット
 
                 chunk = await self.audio_queue.get()
@@ -159,7 +191,7 @@ class ConversationApp:
                 # 音声再生完了時、LISTENINGモードに戻る
                 if self.is_playing_response:
                     self.is_playing_response = False
-                    self.gui.set_state(1)  # Back to LISTENING
+                    self.set_state(AppState.LISTENING)
                     print("[PLAYBACK] Back to LISTENING")
 
                     # 音声再生完了後、Turn Detectionを再有効化してユーザー音声を検知可能にする
@@ -336,7 +368,7 @@ class ConversationApp:
         self.response_in_progress = False
         self.is_playing_response = False
         self.gui.reset_texts()  # GUI側のテキスト表示を即座にリセット
-        self.gui.set_state(2)  # PROCESSING（考え中）
+        self.set_state(AppState.PROCESSING)
 
         # ローカルウェイクワード検知を無効化（割り込み完了）
         self.local_interrupt_enabled = False
