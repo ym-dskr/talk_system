@@ -464,6 +464,413 @@ class ConversationApp:
 
 ---
 
+### 2.3 フラグ統合とイベント駆動アーキテクチャ
+
+**背景**: 現状の課題として、状態機械（AppState）が導入されているにも関わらず、複数のブール値フラグ（`is_playing_response`, `response_in_progress`, `interrupt_active`, `local_interrupt_enabled`）が並存し、「単一の信頼できる情報源（Single Source of Truth）」という設計原則が弱まっています。また、コールバックベースの設計により制御フローが追跡困難になっています。
+
+#### 実装内容
+
+**ファイル**: `src/event_queue.py` (新規作成)
+
+```python
+from enum import Enum, auto
+from dataclasses import dataclass
+from typing import Any, Optional
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
+
+class EventType(Enum):
+    """イベント種別定義"""
+    AUDIO_INPUT_RECEIVED = auto()      # マイクから音声受信
+    AUDIO_DELTA_RECEIVED = auto()      # AI応答音声チャンク受信
+    RESPONSE_STARTED = auto()          # AI応答開始
+    RESPONSE_COMPLETED = auto()        # AI応答完了
+    WAKE_WORD_DETECTED = auto()        # ウェイクワード検知（割り込み）
+    USER_SPEECH_DETECTED = auto()      # ユーザー発話開始検知
+    CONNECTION_ESTABLISHED = auto()    # WebSocket接続確立
+    CONNECTION_LOST = auto()           # WebSocket切断
+    ERROR_OCCURRED = auto()            # エラー発生
+
+@dataclass
+class Event:
+    """イベントデータ"""
+    type: EventType
+    data: Optional[Any] = None
+    timestamp: float = None
+
+    def __post_init__(self):
+        if self.timestamp is None:
+            import time
+            self.timestamp = time.time()
+
+class EventQueue:
+    """イベントキュー管理"""
+    def __init__(self):
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self.logger = logging.getLogger(__name__)
+
+    async def put(self, event: Event):
+        """イベントをキューに追加"""
+        await self.queue.put(event)
+        self.logger.debug(f"Event queued: {event.type.name}")
+
+    async def get(self) -> Event:
+        """イベントを取得（ブロッキング）"""
+        return await self.queue.get()
+
+    def empty(self) -> bool:
+        """キューが空かチェック"""
+        return self.queue.empty()
+```
+
+**ファイル**: `conversation_app.py` (大幅修正)
+
+```python
+from src.event_queue import EventQueue, Event, EventType
+from src.state_machine import AppState, StateTransition
+
+class ConversationApp:
+    def __init__(self):
+        self.state = AppState.IDLE
+        self.event_queue = EventQueue()
+
+        # ❌ 削除するフラグ（状態機械に統合）
+        # self.is_playing_response = False
+        # self.response_in_progress = False
+        # self.interrupt_active = False
+        # self.local_interrupt_enabled = False
+
+        # ✅ タスク管理（適切なライフサイクル管理）
+        self.tasks: set[asyncio.Task] = set()
+        self.stop_event = asyncio.Event()
+
+        self.logger = logging.getLogger(__name__)
+
+    async def run(self):
+        """メインイベントループ"""
+        # タスク起動
+        self._start_task(self._event_processor())
+        self._start_task(self._audio_record_loop())
+        self._start_task(self._wake_word_monitor())
+        self._start_task(self._websocket_receiver())
+
+        # メインループ（GUI更新）
+        while self.gui.running and not self.stop_event.is_set():
+            self.gui.update()
+            await asyncio.sleep(0.001)
+
+        # クリーンアップ
+        await self._cleanup()
+
+    def _start_task(self, coro):
+        """タスクを起動して追跡"""
+        task = asyncio.create_task(coro)
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        return task
+
+    async def _event_processor(self):
+        """イベント処理ループ（中央制御）"""
+        while not self.stop_event.is_set():
+            try:
+                event = await asyncio.wait_for(
+                    self.event_queue.get(),
+                    timeout=0.1
+                )
+                await self._handle_event(event)
+            except asyncio.TimeoutError:
+                continue
+
+    async def _handle_event(self, event: Event):
+        """イベント種別に応じた処理"""
+        self.logger.debug(f"Processing event: {event.type.name} in state {self.state.name}")
+
+        if event.type == EventType.WAKE_WORD_DETECTED:
+            # 割り込み処理（SPEAKING中のみ有効）
+            if self.state == AppState.SPEAKING:
+                self.logger.info("Wake word interrupt detected")
+                await self._execute_interrupt()
+                self.set_state(AppState.LISTENING)
+
+        elif event.type == EventType.RESPONSE_STARTED:
+            if self.state == AppState.PROCESSING:
+                self.set_state(AppState.SPEAKING)
+
+        elif event.type == EventType.RESPONSE_COMPLETED:
+            if self.state == AppState.SPEAKING:
+                self.set_state(AppState.LISTENING)
+
+        elif event.type == EventType.AUDIO_DELTA_RECEIVED:
+            # 音声再生キューに追加
+            if self.state == AppState.SPEAKING:
+                await self.audio.enqueue_playback(event.data)
+
+        # ... 他のイベント処理
+
+    async def _cleanup(self):
+        """シャットダウン処理（順序付き）"""
+        self.logger.info("Starting cleanup...")
+
+        # 1. 停止シグナル設定
+        self.stop_event.set()
+
+        # 2. タスクキャンセル
+        for task in self.tasks:
+            task.cancel()
+
+        # 3. タスク完了待機
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+
+        # 4. リソース解放
+        if self.client.ws:
+            await self.client.disconnect()
+        self.audio.terminate()
+
+        self.logger.info("Cleanup completed")
+```
+
+**ファイル**: `src/audio.py` (修正: コールバックからイベントキューへ)
+
+```python
+class AudioHandler:
+    def __init__(self, event_queue: EventQueue):
+        self.event_queue = event_queue
+        self.resample_buffer = bytearray()  # リサンプリングバッファ
+
+    def audio_input_callback(self, in_data, frame_count, time_info, status):
+        """音声入力コールバック（軽量化）"""
+        # ❌ 重い処理をコールバック内で実行しない
+        # ✅ イベントキューに投げて別タスクで処理
+        asyncio.create_task(
+            self.event_queue.put(Event(EventType.AUDIO_INPUT_RECEIVED, in_data))
+        )
+        return (None, pyaudio.paContinue)
+
+    async def _audio_processor(self):
+        """音声処理タスク（リサンプリング、ウェイクワード検知）"""
+        while not self.stop_event.is_set():
+            event = await self.event_queue.get()
+            if event.type == EventType.AUDIO_INPUT_RECEIVED:
+                # リサンプリング処理（重い）
+                resampled = self._resample(event.data)
+
+                # LISTENING状態の場合のみAPI送信
+                if self.app.state == AppState.LISTENING:
+                    await self.client.send_audio(resampled)
+```
+
+#### 成果物チェックリスト
+
+- [ ] `src/event_queue.py` 作成
+- [ ] `conversation_app.py` からフラグ削除（`is_playing_response`, `response_in_progress`, `interrupt_active`, `local_interrupt_enabled`）
+- [ ] イベント駆動アーキテクチャへの移行完了
+- [ ] タスク追跡機能実装（`self.tasks: set[asyncio.Task]`）
+- [ ] 順序付きシャットダウン処理実装（stop_event → cancel → gather → close）
+- [ ] 音声コールバック軽量化（重い処理を別タスクへ移動）
+- [ ] ウェイクワード検知を別タスクに分離
+
+---
+
+### 2.4 タスクライフサイクル管理の改善
+
+#### 実装内容
+
+**問題点**: 現状の `cleanup()` はリソース解放のみで、実行中タスクの適切なキャンセルがない。
+
+**改善策**:
+1. 全asyncioタスクを `self.tasks: set[asyncio.Task]` で追跡
+2. シャットダウン時に順序付きキャンセル（stop_event → cancel → gather → close）
+3. タスク完了時の自動クリーンアップ
+
+上記2.3のコード例に含まれています。
+
+#### 成果物チェックリスト
+
+- [ ] `self.tasks` によるタスク追跡実装
+- [ ] `_start_task()` ヘルパーメソッド実装
+- [ ] `_cleanup()` の順序付きシャットダウン実装
+- [ ] Ctrl+C での正常終了確認
+- [ ] WebSocket切断時の適切なクリーンアップ確認
+
+---
+
+### 2.5 最小テストの導入
+
+#### 実装内容
+
+**ファイル**: `tests/test_state_machine.py` (新規作成)
+
+```python
+import pytest
+from src.state_machine import AppState, StateTransition
+
+def test_valid_transitions():
+    """有効な状態遷移のテスト"""
+    assert StateTransition.is_valid_transition(AppState.IDLE, AppState.LISTENING)
+    assert StateTransition.is_valid_transition(AppState.LISTENING, AppState.PROCESSING)
+    assert StateTransition.is_valid_transition(AppState.PROCESSING, AppState.SPEAKING)
+    assert StateTransition.is_valid_transition(AppState.SPEAKING, AppState.LISTENING)
+
+def test_invalid_transitions():
+    """無効な状態遷移のテスト"""
+    assert not StateTransition.is_valid_transition(AppState.IDLE, AppState.SPEAKING)
+    assert not StateTransition.is_valid_transition(AppState.LISTENING, AppState.SPEAKING)
+    assert not StateTransition.is_valid_transition(AppState.PROCESSING, AppState.LISTENING)
+
+def test_error_recovery():
+    """エラーからの復旧遷移テスト"""
+    assert StateTransition.is_valid_transition(AppState.ERROR, AppState.IDLE)
+    assert StateTransition.is_valid_transition(AppState.ERROR, AppState.LISTENING)
+    assert not StateTransition.is_valid_transition(AppState.ERROR, AppState.SPEAKING)
+```
+
+**ファイル**: `tests/test_config.py` (新規作成)
+
+```python
+import pytest
+from pydantic import ValidationError
+from src.config_models import AppConfig, AudioConfig
+
+def test_audio_config_defaults():
+    """音声設定のデフォルト値テスト"""
+    config = AudioConfig()
+    assert config.sample_rate == 24000
+    assert config.input_channels == 1
+    assert config.output_channels == 2
+
+def test_app_config_validation():
+    """必須フィールドバリデーションテスト"""
+    with pytest.raises(ValidationError):
+        # API キーが必須
+        AppConfig()
+
+    # 正常なケース
+    config = AppConfig(
+        openai_api_key="test_key",
+        picovoice_access_key="test_key"
+    )
+    assert config.openai_api_key == "test_key"
+```
+
+**ファイル**: `tests/test_interrupt_flow.py` (新規作成)
+
+```python
+import pytest
+import asyncio
+from src.event_queue import EventQueue, Event, EventType
+from src.state_machine import AppState
+
+@pytest.mark.asyncio
+async def test_wake_word_interrupt_flow():
+    """ウェイクワード割り込みフローのテスト"""
+    # テスト用アプリケーションインスタンス
+    app = MockConversationApp()
+    app.state = AppState.SPEAKING
+
+    # ウェイクワードイベント送信
+    await app.event_queue.put(Event(EventType.WAKE_WORD_DETECTED))
+
+    # イベント処理待機
+    await asyncio.sleep(0.1)
+
+    # SPEAKING → LISTENING への遷移確認
+    assert app.state == AppState.LISTENING
+```
+
+#### 成果物チェックリスト
+
+- [ ] `tests/test_state_machine.py` 作成
+- [ ] `tests/test_config.py` 作成
+- [ ] `tests/test_interrupt_flow.py` 作成
+- [ ] `pytest tests/` で全テスト成功
+- [ ] カバレッジ確認（最低でも主要ロジックがカバーされていること）
+
+---
+
+### 2.6 将来対応: audioop.ratecv 代替
+
+**背景**: Python 3.13 で `audioop` モジュールが削除予定。現在使用している `audioop.ratecv()` のリサンプリング処理に代替実装が必要。
+
+#### 実装内容
+
+**オプション1**: `scipy.signal.resample` (高品質、依存追加)
+
+```python
+# requirements.txt に追加
+scipy>=1.11.0
+
+# src/audio.py
+import numpy as np
+from scipy import signal
+
+def resample_audio(data: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """scipyベースのリサンプリング"""
+    # bytesをnumpy配列に変換
+    audio_array = np.frombuffer(data, dtype=np.int16)
+
+    # リサンプリング
+    num_samples = int(len(audio_array) * dst_rate / src_rate)
+    resampled = signal.resample(audio_array, num_samples)
+
+    # int16に戻す
+    return resampled.astype(np.int16).tobytes()
+```
+
+**オプション2**: `soxr` (高速、軽量)
+
+```python
+# requirements.txt に追加
+soxr>=0.3.0
+
+# src/audio.py
+import soxr
+import numpy as np
+
+def resample_audio(data: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """soxrベースのリサンプリング（高速）"""
+    audio_array = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+    resampled = soxr.resample(audio_array, src_rate, dst_rate)
+    return (resampled * 32768.0).astype(np.int16).tobytes()
+```
+
+#### 成果物チェックリスト
+
+- [ ] リサンプリング代替実装の選定（scipy or soxr）
+- [ ] `src/audio.py` のリサンプリング処理を更新
+- [ ] Python 3.13環境でのテスト
+- [ ] 音質確認（元のaudioop.ratecvと比較）
+
+---
+
+### 2.7 config.py 段階的廃止計画
+
+**現状**: `config.py` に後方互換エイリアスが残存。pydantic移行後は段階的に削除。
+
+#### マイルストーン
+
+**フェーズ1** (Phase 2.1完了時): pydantic導入、後方互換維持
+- ✅ `src/config_models.py` 作成
+- ✅ `config.py` に後方互換エイリアス残存
+- ✅ 既存コードは動作継続
+
+**フェーズ2** (Phase 3完了時): 直接参照の段階的移行
+- [ ] 各モジュールで `from config import SAMPLE_RATE` → `from src.config_models import app_config` に変更
+- [ ] `config.py` のエイリアスに `DeprecationWarning` 追加
+
+**フェーズ3** (Phase 4完了時): 完全移行
+- [ ] すべてのコードが `app_config` 経由でアクセス
+- [ ] `config.py` 削除（環境変数ロードのみ残す）
+
+#### 成果物チェックリスト
+
+- [ ] 各フェーズのマイルストーン設定
+- [ ] 移行ガイド作成（`docs/CONFIG_MIGRATION.md`）
+- [ ] 後方互換期間の明確化（例: Phase 3まで維持）
+
+---
+
 ## 📦 Phase 3: 機能拡張（割り込み改善 + 人格切替）
 
 **目標**: ユーザー体験を向上させる
@@ -750,17 +1157,22 @@ echo "Service installed. Start with: sudo systemctl start talk-system"
 
 ## 🎯 実装優先順位まとめ
 
-| Phase | タスク                 | 優先度 | 依存関係     | 期待効果                    |
-| ----- | ------------------- | --- | -------- | ----------------------- |
-| 1.1   | 状態管理の明示化            | 🔴  | なし       | デバッグ性向上、バグ減少            |
-| 1.2   | ロギング基盤導入            | 🔴  | なし       | 運用時のトラブルシュート可能化         |
-| 1.3   | 例外処理・復旧ロジック         | 🔴  | 1.2 推奨  | 常駐プロセスとしての安定性向上         |
-| 2.1   | 設定管理のリファクタリング       | 🟠  | なし       | 型安全性向上、設定ミス防止           |
-| 2.2   | 並行処理の責務整理           | 🟠  | なし       | 保守性向上、ドキュメント整備          |
-| 3.1   | 割り込み処理の改善           | 🟡  | 1.1, 1.2 | UX向上（応答性改善）            |
-| 3.2   | 人格切替機能              | 🟡  | 2.1 推奨  | 子供向け対応、利用シーン拡大          |
-| 4.1   | パッケージ化              | 🟢  | 全Phase  | テスト可能性向上、再利用性向上         |
-| 4.2   | systemd サービス化       | 🟢  | 4.1      | 本格稼働対応（自動起動・自動復旧）       |
+| Phase | タスク                   | 優先度 | 依存関係          | 期待効果                           |
+| ----- | --------------------- | --- | ------------- | ------------------------------ |
+| 1.1   | 状態管理の明示化              | 🔴  | なし            | デバッグ性向上、バグ減少                   |
+| 1.2   | ロギング基盤導入              | 🔴  | なし            | 運用時のトラブルシュート可能化                |
+| 1.3   | 例外処理・復旧ロジック           | 🔴  | 1.2 推奨       | 常駐プロセスとしての安定性向上                |
+| 2.1   | 設定管理のリファクタリング         | 🟠  | なし            | 型安全性向上、設定ミス防止                  |
+| 2.2   | 並行処理の責務整理             | 🟠  | なし            | 保守性向上、ドキュメント整備                 |
+| 2.3   | フラグ統合とイベント駆動アーキテクチャ   | 🔴  | 1.1, 1.2, 2.1 | Single Source of Truth実現、制御フロー明確化 |
+| 2.4   | タスクライフサイクル管理の改善       | 🔴  | 2.3           | シャットダウン堅牢性向上、リソースリーク防止         |
+| 2.5   | 最小テストの導入              | 🟠  | 1.1, 2.1      | 品質保証、リグレッション防止                 |
+| 2.6   | audioop.ratecv代替       | 🟡  | なし            | Python 3.13対応、将来互換性            |
+| 2.7   | config.py段階的廃止計画      | 🟡  | 2.1           | 設計一貫性向上、技術的負債削減                |
+| 3.1   | 割り込み処理の改善             | 🟡  | 2.3, 2.4      | UX向上（応答性改善）                   |
+| 3.2   | 人格切替機能                | 🟡  | 2.1 推奨       | 子供向け対応、利用シーン拡大                 |
+| 4.1   | パッケージ化                | 🟢  | 全Phase       | テスト可能性向上、再利用性向上                |
+| 4.2   | systemd サービス化         | 🟢  | 4.1           | 本格稼働対応（自動起動・自動復旧）              |
 
 ---
 
@@ -776,6 +1188,11 @@ echo "Service installed. Start with: sudo systemctl start talk-system"
 - [ ] `pydantic` ベースの設定管理が導入される
 - [ ] 並行処理モデルがドキュメント化される
 - [ ] 型ヒント補完が効く
+- [ ] すべてのブール値フラグが状態機械に統合される
+- [ ] イベント駆動アーキテクチャへ移行完了
+- [ ] タスク追跡機能とクリーンアップ処理が実装される
+- [ ] 最小限のテストが整備され、`pytest tests/` が成功する
+- [ ] audioop.ratecv の代替実装が選定・実装される
 
 ### Phase 3 完了条件
 - [ ] 割り込み時に音声が即座停止する
@@ -903,3 +1320,9 @@ Phase実装時に参考になるドキュメント:
 
 **改訂履歴**:
 - 2025-12-27: 初版作成
+- 2025-12-28: Phase 2に追加タスク（2.3-2.7）を追加（外部レビューフィードバック反映）
+  - フラグ統合とイベント駆動アーキテクチャ（2.3）
+  - タスクライフサイクル管理の改善（2.4）
+  - 最小テストの導入（2.5）
+  - audioop.ratecv代替（2.6）
+  - config.py段階的廃止計画（2.7）

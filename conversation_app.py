@@ -59,6 +59,7 @@ from src.gui import GUIHandler
 from src.wake_word import WakeWordEngine
 from src.state_machine import AppState, StateTransition
 from src.logging_config import setup_logging
+from src.event_queue import EventQueue, Event, EventType
 
 # ロギング初期化
 setup_logging()
@@ -107,12 +108,17 @@ class ConversationApp:
             on_response_created=self.on_response_created    # AI応答生成開始時（割り込み判定用）
         )
 
+        # イベント駆動アーキテクチャ（Phase 2.3）
+        self.event_queue = EventQueue()         # イベントキュー（中央制御）
+        self.tasks: set[asyncio.Task] = set()   # タスク追跡（適切なライフサイクル管理）
+        self.stop_event = asyncio.Event()       # シャットダウンシグナル
+
         # 音声再生バッファとタイムアウト管理
         self.audio_queue = asyncio.Queue()      # AI応答音声のバッファリング用キュー
-        self.is_playing_response = False        # 音声再生中フラグ
+        self.is_playing_response = False        # 音声再生中フラグ（TODO: Phase 2.3で削除）
         self.last_interaction_time = time.time()  # 最後の操作時刻（タイムアウト判定用）
-        self.response_in_progress = False       # AI応答処理中フラグ
-        self.interrupt_active = False           # 割り込み中フラグ（音声受信を無視）
+        self.response_in_progress = False       # AI応答処理中フラグ（TODO: Phase 2.3で削除）
+        self.interrupt_active = False           # 割り込み中フラグ（TODO: Phase 2.3で削除）
         self.inactivity_timeout = 180.0         # 無操作タイムアウト（180秒 = 3分）
         self.connection_time = 0                # API接続時刻（ノイズ除外用）
 
@@ -183,7 +189,7 @@ class ConversationApp:
             # ================================================================================
             try:
                 self.audio.start_stream(input_callback=self.audio_input_callback)
-                asyncio.create_task(self.audio.record_loop())
+                self._start_task(self.audio.record_loop())  # タスク追跡を有効化
             except RuntimeError as e:
                 self.logger.error(f"Failed to initialize audio stream: {e}")
                 self.set_state(AppState.ERROR)
@@ -481,21 +487,76 @@ class ConversationApp:
         self.logger.info(f"Agent: {text}")
         self.gui.set_agent_text(text)
 
+    def _start_task(self, coro):
+        """
+        タスクを起動して追跡
+
+        asyncioタスクを作成し、タスクセットに追加して追跡します。
+        タスク完了時に自動的にセットから削除されます。
+
+        Args:
+            coro: 実行するコルーチン
+
+        Returns:
+            作成されたasyncio.Task
+        """
+        task = asyncio.create_task(coro)
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        return task
+
     async def cleanup(self):
         """
-        アプリケーションのクリーンアップ
+        アプリケーションのクリーンアップ（順序付きシャットダウン）
+
+        Phase 2.3: イベント駆動アーキテクチャ対応
+        1. 停止シグナル設定
+        2. タスクキャンセル
+        3. タスク完了待機
+        4. リソース解放
 
         WebSocket接続を切断し、音声ストリームを停止し、
         GUIを終了します。
         """
-        self.logger.info("Cleaning up conversation app...")
-        await self.client.close()
-        self.audio.terminate()
-        self.gui.quit()
+        self.logger.info("Starting cleanup...")
+
+        # 1. 停止シグナル設定
+        self.stop_event.set()
+
+        # 2. タスクキャンセル
+        for task in self.tasks:
+            if not task.done():
+                task.cancel()
+
+        # 3. タスク完了待機（例外を無視）
+        if self.tasks:
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+            self.logger.debug(f"All {len(self.tasks)} tasks cancelled")
+
+        # 4. リソース解放
+        try:
+            await self.client.close()
+        except Exception as e:
+            self.logger.error(f"Error closing WebSocket client: {e}")
+
+        try:
+            self.audio.terminate()
+        except Exception as e:
+            self.logger.error(f"Error terminating audio: {e}")
+
+        try:
+            self.gui.quit()
+        except Exception as e:
+            self.logger.error(f"Error quitting GUI: {e}")
+
         # WakeWordEngineリソースを解放
         if hasattr(self, 'wake_word'):
-            self.wake_word.delete()
-        self.logger.info("Conversation app exited")
+            try:
+                self.wake_word.delete()
+            except Exception as e:
+                self.logger.error(f"Error deleting wake word engine: {e}")
+
+        self.logger.info("Cleanup completed")
 
 if __name__ == "__main__":
     app = ConversationApp()
