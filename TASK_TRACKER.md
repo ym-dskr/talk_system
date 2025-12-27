@@ -2,8 +2,8 @@
 
 **作成日**: 2025-12-27
 **最終更新**: 2025-12-28
-**ステータス**: 🟡 Phase 1-2 完了、Phase 2追加タスク（2.3-2.7）計画中
-**現在のPhase**: Phase 2.3-2.7 (アーキテクチャ改善) → Phase 3 (機能拡張) → Phase 4 (プロダクション対応)
+**ステータス**: 🟡 Phase 2.3 着手中（P2.3-1/1.5 完了、P2.3-3/2.3-4 部分実装）
+**現在のPhase**: Phase 2.3 (アーキテクチャ改善) → Phase 2.4-2.7 → Phase 3 (機能拡張) → Phase 4 (プロダクション対応)
 
 ---
 
@@ -18,7 +18,7 @@
 | 1.4   | Phase 1 統合テスト     | ✅ 完了  | 3      | 3     | 100% |
 | 2.1   | 設定管理リファクタ         | ✅ 完了  | 4      | 4     | 100% |
 | 2.2   | 並行処理責務整理          | ✅ 完了  | 3      | 3     | 100% |
-| 2.3   | フラグ統合とイベント駆動      | ⬜ 未着手 | 0      | 7     | 0%   |
+| 2.3   | フラグ統合とイベント駆動      | 🟡 進行中 | 2      | 8     | 25%  |
 | 2.4   | タスクライフサイクル管理      | ⬜ 未着手 | 0      | 2     | 0%   |
 | 2.5   | 最小テスト導入          | ⬜ 未着手 | 0      | 5     | 0%   |
 | 2.6   | audioop代替         | ⬜ 未着手 | 0      | 3     | 0%   |
@@ -28,7 +28,7 @@
 | 4.1   | パッケージ化            | ⬜ 未着手 | 0      | 3     | 0%   |
 | 4.2   | systemd対応         | ⬜ 未着手 | 0      | 3     | 0%   |
 
-**総合進捗**: 29/57 タスク完了 (51%)
+**総合進捗**: 31/58 タスク完了 (53%)
 
 ---
 
@@ -327,15 +327,20 @@
 **優先度**: 🔴 最高
 **依存**: Phase 1.1, 1.2, 2.1 完了
 **目標**: Single Source of Truth実現、制御フロー明確化
-**ステータス**: ⬜ 未着手
+**ステータス**: 🟡 進行中
 
 ### タスクリスト
 
-- [ ] **P2.3-1**: `src/event_queue.py` を作成
-  - [ ] `EventType` Enumを定義（AUDIO_INPUT_RECEIVED, AUDIO_DELTA_RECEIVED, RESPONSE_STARTED, RESPONSE_COMPLETED, WAKE_WORD_DETECTED, USER_SPEECH_DETECTED, CONNECTION_ESTABLISHED, CONNECTION_LOST, ERROR_OCCURRED）
-  - [ ] `Event` データクラスを実装
-  - [ ] `EventQueue` クラスを実装
+- [x] **P2.3-1**: `src/event_queue.py` を作成
+  - [x] `EventType` Enumを定義（AUDIO_INPUT_RECEIVED, AUDIO_DELTA_RECEIVED, RESPONSE_STARTED, RESPONSE_COMPLETED, WAKE_WORD_DETECTED, USER_SPEECH_DETECTED, CONNECTION_ESTABLISHED, CONNECTION_LOST, ERROR_OCCURRED）
+  - [x] `Event` データクラスを実装
+  - [x] `EventQueue` クラスを実装
   - 確認: `python -c "from src.event_queue import EventType; print(EventType.WAKE_WORD_DETECTED)"`
+
+- [x] **P2.3-1.5**: ユーザー入力音声のログ出力を有効化
+  - [x] `src/realtime_client.py` の session.update に `input_audio_transcription` を追加
+  - [x] `handle_user_transcript()` コールバック経由でログ出力を確認
+  - 確認: ログに "User: {text}" が出力されることを確認
 
 - [ ] **P2.3-2**: `conversation_app.py` からフラグを削除し、イベント駆動に移行
   - [ ] `is_playing_response`, `response_in_progress`, `interrupt_active`, `local_interrupt_enabled` を削除
@@ -346,14 +351,14 @@
   - 確認: `grep -E "(is_playing_response|response_in_progress|interrupt_active|local_interrupt_enabled)" conversation_app.py` が空
 
 - [ ] **P2.3-3**: タスク追跡機能を実装
-  - [ ] `self.tasks: set[asyncio.Task] = set()` を追加
-  - [ ] `self.stop_event = asyncio.Event()` を追加
-  - [ ] `_start_task()` ヘルパーメソッドを実装
+  - [x] `self.tasks: set[asyncio.Task] = set()` を追加
+  - [x] `self.stop_event = asyncio.Event()` を追加
+  - [x] `_start_task()` ヘルパーメソッドを実装
   - [ ] すべてのタスク起動を `_start_task()` に変更
   - 確認: `grep -n "_start_task" conversation_app.py`
 
 - [ ] **P2.3-4**: 順序付きシャットダウン処理を実装
-  - [ ] `_cleanup()` を修正（stop_event → cancel → gather → close）
+  - [x] `_cleanup()` を修正（stop_event → cancel → gather → close）
   - [ ] Ctrl+C での正常終了を確認
   - [ ] WebSocket切断時の適切なクリーンアップを確認
   - 確認: Ctrl+C でクリーンにシャットダウンすることを確認
@@ -376,7 +381,7 @@
   - [ ] 割り込み処理が正常に動作することを確認
 
 ### 成果物
-- `src/event_queue.py` (新規)
+- `src/event_queue.py` (新規) ✅
 - `conversation_app.py` (大幅修正)
 - `src/audio.py` (修正)
 
@@ -701,6 +706,7 @@
 | 2025-12-27 | Phase 1 完了（状態管理・ロギング・例外処理） | Claude |
 | 2025-12-27 | Phase 2 完了（設定管理・アーキテクチャ文書） | Claude |
 | 2025-12-28 | Phase 1-2 完了のステータス更新       | Claude |
+| 2025-12-28 | Phase 2.3 着手（イベントキュー、タスク/クリーンアップ基盤） | Claude |
 
 ---
 
@@ -715,14 +721,14 @@
 - ✅ テストチェックリスト
 
 ### 進行中の課題
-- （なし）
+- Phase 2.3: イベント駆動移行（P2.3-2/5/6/7未着手、P2.3-3/2.3-4は残作業あり）
 
 ### 検討事項
 - Phase 3（機能拡張）への着手タイミング
 - Phase 4（プロダクション対応）の優先順位
 
 ### 次回作業予定
-- Phase 3.1（割り込み処理改善）または Phase 4（systemd化）を検討
+- Phase 2.3 の残タスク（P2.3-2, P2.3-5, P2.3-6, P2.3-7）
 
 ---
 
@@ -771,4 +777,6 @@
 |            | - 最小テストの導入（2.5）                         |                     |
 |            | - audioop.ratecv代替（2.6）                  |                     |
 |            | - config.py段階的廃止計画（2.7）                 |                     |
+| 2025-12-28 | Phase 2.3 着手（イベントキュー、タスク/クリーンアップ基盤） | コード反映状況に合わせて更新 |
 | 2025-12-28 | 総合進捗更新: 29/37 (78%) → 29/57 (51%)       | 新規タスク追加により進捗率変動     |
+| 2025-12-28 | 総合進捗更新: 29/57 (51%) → 30/57 (53%)       | Phase 2.3 着手による進捗反映       |
