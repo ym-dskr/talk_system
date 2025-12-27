@@ -34,3 +34,4 @@ Thumbs.db
 
 # Service file (install script generates this)
 kikai-kun.service
+logs/*.log
