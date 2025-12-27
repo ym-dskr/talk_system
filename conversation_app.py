@@ -31,8 +31,10 @@ from src.realtime_client import RealtimeClient
 from src.gui import GUIHandler
 from src.wake_word import WakeWordEngine
 from src.state_machine import AppState, StateTransition
+from src.logging_config import setup_logging
 
-# ロガー設定（Phase 1.2で本格的なロギング設定を導入予定）
+# ロギング初期化
+setup_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -139,7 +141,7 @@ class ConversationApp:
         3. メインループ（GUI更新、音声再生、タイムアウト監視）
         4. クリーンアップ
         """
-        print("Conversation App Started")
+        self.logger.info("Conversation App Started")
 
         # ================================================================================
         # 音声ストリームの開始
@@ -155,9 +157,9 @@ class ConversationApp:
             self.connection_time = time.time()  # 接続時刻を記録
             self.last_interaction_time = time.time()
             self.set_state(AppState.LISTENING)
-            print("Connected to OpenAI Realtime API")
+            self.logger.info("Connected to OpenAI Realtime API")
         except Exception as e:
-            print(f"Failed to connect: {e}")
+            self.logger.error(f"Failed to connect: {e}")
             self.gui.running = False
             return
 
@@ -171,7 +173,7 @@ class ConversationApp:
             # 無操作タイムアウトチェック（15秒）
             elapsed = time.time() - self.last_interaction_time
             if elapsed > self.inactivity_timeout:
-                print(f"[TIMEOUT] Inactivity timeout ({self.inactivity_timeout}s elapsed: {elapsed:.1f}s). Exiting conversation.")
+                self.logger.info(f"Inactivity timeout ({self.inactivity_timeout}s elapsed: {elapsed:.1f}s). Exiting conversation.")
                 self.gui.running = False
                 break
 
@@ -192,7 +194,7 @@ class ConversationApp:
                 if self.is_playing_response:
                     self.is_playing_response = False
                     self.set_state(AppState.LISTENING)
-                    print("[PLAYBACK] Back to LISTENING")
+                    self.logger.debug("Playback complete, back to LISTENING")
 
                     # 音声再生完了後、Turn Detectionを再有効化してユーザー音声を検知可能にする
                     asyncio.create_task(self.client.enable_turn_detection())
@@ -224,13 +226,6 @@ class ConversationApp:
             loop = asyncio.get_running_loop()
             loop.create_task(self.client.send_audio(in_data))
 
-            # デバッグログは削除（パフォーマンス向上）
-            # if not hasattr(self, '_input_counter'):
-            #     self._input_counter = 0
-            # self._input_counter += 1
-            # if self._input_counter % 100 == 0:  # 100チャンクごとに出力
-            #     print(f"[MIC] Sending audio to API (chunk #{self._input_counter}, {len(in_data)} bytes)")
-
             # ================================================================================
             # ローカルウェイクワード検知（AI応答中のみ）
             # ================================================================================
@@ -254,14 +249,14 @@ class ConversationApp:
                     # Porcupineでウェイクワード検知
                     keyword_index = self.wake_word.process(frame)
                     if keyword_index >= 0:
-                        print("[WAKE-WORD] Detected - interrupting")
+                        self.logger.info("Wake word detected - interrupting AI response")
                         # 割り込み処理を実行
                         self.execute_interrupt()
 
         except RuntimeError:
             pass  # イベントループ未起動時は無視
         except Exception as e:
-            print(f"[MIC] Audio callback error: {e}")
+            self.logger.error(f"Audio callback error: {e}")
 
     def on_user_speech_start(self):
         """
@@ -293,7 +288,7 @@ class ConversationApp:
         ローカルウェイクワード検知を有効化し、「きかいくん」で
         割り込み可能にします。
         """
-        print("[RESPONSE] AI response started")
+        self.logger.debug("AI response started")
         self.response_in_progress = True
         self.interrupt_active = False  # 新しい応答開始、割り込みフラグをリセット
         self.last_interaction_time = time.time()  # タイムアウトリセット
@@ -313,7 +308,7 @@ class ConversationApp:
         OpenAI Realtime APIがAI応答の生成を完了した際に呼ばれます。
         応答生成中フラグをクリアします。
         """
-        print("Response done")
+        self.logger.debug("AI response completed")
         self.response_in_progress = False
         self.last_interaction_time = time.time()  # タイムアウトリセット
 
@@ -346,7 +341,7 @@ class ConversationApp:
         AI応答中にユーザーが特定のキーワードを発話した際に呼ばれます。
         音声キューのクリア、音声再生停止、APIへのキャンセル送信を行います。
         """
-        print("[INTERRUPT] Executing interrupt")
+        self.logger.info("Executing interrupt")
 
         # 割り込みフラグを立てる（新しい音声チャンクを拒否）
         self.interrupt_active = True
@@ -375,7 +370,7 @@ class ConversationApp:
 
         # 割り込み後、Turn Detectionを再有効化してユーザーの次の発話を受け付ける
         asyncio.create_task(self.client.enable_turn_detection())
-        print("[INTERRUPT] Complete")
+        self.logger.debug("Interrupt complete")
 
     def handle_user_transcript(self, text):
         """
@@ -385,13 +380,13 @@ class ConversationApp:
             AI応答中の割り込みはローカルウェイクワード検知で処理されるため、
             ここでは終了キーワードのみチェックします。
         """
-        print(f"User: {text}")
+        self.logger.info(f"User: {text}")
         self.gui.set_user_text(text)
 
         # 終了キーワードのチェック
         exit_keywords = ["ストップ", "おわり", "終わり", "終了", "バイバイ", "さようなら", "またね"]
         if any(kw in text for kw in exit_keywords):
-            print(f"[EXIT] Exit keyword detected in user speech: {text}")
+            self.logger.info(f"Exit keyword detected in user speech: {text}")
             # AIが最後に応答する時間を少しだけ確保してから終了するようにスケジュール
             asyncio.create_task(self.delayed_exit(2.0))
 
@@ -400,7 +395,7 @@ class ConversationApp:
         指定秒数後にアプリを終了する
         """
         await asyncio.sleep(delay)
-        print("[EXIT] Exiting application by voice command.")
+        self.logger.info("Exiting application by voice command")
         self.gui.running = False
 
     def handle_agent_transcript(self, text):
@@ -413,7 +408,7 @@ class ConversationApp:
         Args:
             text (str): AI応答のテキスト
         """
-        print(f"Agent: {text}")
+        self.logger.info(f"Agent: {text}")
         self.gui.set_agent_text(text)
 
     async def cleanup(self):
@@ -423,22 +418,20 @@ class ConversationApp:
         WebSocket接続を切断し、音声ストリームを停止し、
         GUIを終了します。
         """
-        print("Cleaning up conversation app...")
+        self.logger.info("Cleaning up conversation app...")
         await self.client.close()
         self.audio.terminate()
         self.gui.quit()
         # WakeWordEngineリソースを解放
         if hasattr(self, 'wake_word'):
             self.wake_word.delete()
-        print("Conversation app exited")
+        self.logger.info("Conversation app exited")
 
 if __name__ == "__main__":
     app = ConversationApp()
     try:
         asyncio.run(app.run())
     except KeyboardInterrupt:
-        print("\nInterrupted")
+        logger.info("Application interrupted by user")
     except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Application error: {e}", exc_info=True)
