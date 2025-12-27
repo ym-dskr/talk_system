@@ -11,6 +11,9 @@ import asyncio
 import numpy as np
 import time
 import threading
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class AudioHandler:
@@ -53,6 +56,41 @@ class AudioHandler:
         # Resampling states
         self.input_resample_state = None
         self.output_resample_state = None
+        self.logger = logging.getLogger(__name__)
+
+    def _list_audio_devices(self):
+        """
+        利用可能なオーディオデバイスを列挙（デバイス診断用）
+
+        PyAudioが認識している全てのオーディオデバイスをログに出力します。
+        デバイス初期化エラー時の診断に使用されます。
+        """
+        try:
+            info = self.p.get_host_api_info_by_index(0)
+            num_devices = info.get('deviceCount')
+
+            self.logger.info("Available audio devices:")
+            for i in range(num_devices):
+                try:
+                    device_info = self.p.get_device_info_by_host_api_device_index(0, i)
+                    device_name = device_info.get('name')
+                    max_input_channels = device_info.get('maxInputChannels')
+                    max_output_channels = device_info.get('maxOutputChannels')
+                    default_sample_rate = device_info.get('defaultSampleRate')
+
+                    device_type = []
+                    if max_input_channels > 0:
+                        device_type.append(f"Input({max_input_channels}ch)")
+                    if max_output_channels > 0:
+                        device_type.append(f"Output({max_output_channels}ch)")
+
+                    self.logger.info(
+                        f"  [{i}] {device_name} - {'/'.join(device_type)} @ {default_sample_rate}Hz"
+                    )
+                except Exception as e:
+                    self.logger.warning(f"  [{i}] Error reading device info: {e}")
+        except Exception as e:
+            self.logger.error(f"Failed to enumerate audio devices: {e}")
 
     def start_stream(self, rate=24000, chunk=1024, input_callback=None):
         """
@@ -72,8 +110,12 @@ class AudioHandler:
         self.output_channels = OUTPUT_CHANNELS
         self.target_rate = rate # API Rate (24k)
         self.hw_rate = HARDWARE_SAMPLE_RATE # HW Rate (48k)
-        
-        print(f"Opening Stream: InputIdx={INPUT_DEVICE_INDEX} (Ch={INPUT_CHANNELS}), OutputIdx={OUTPUT_DEVICE_INDEX} (Ch={OUTPUT_CHANNELS}), Rate={self.hw_rate} (Resampling from {self.target_rate})")
+
+        self.logger.info(
+            f"Opening audio stream: Input=[device={INPUT_DEVICE_INDEX}, ch={INPUT_CHANNELS}], "
+            f"Output=[device={OUTPUT_DEVICE_INDEX}, ch={OUTPUT_CHANNELS}], "
+            f"HW_rate={self.hw_rate}Hz, Target_rate={self.target_rate}Hz"
+        )
 
         # Output Stream（バッファサイズを大きくして音飛びを防止）
         try:
@@ -85,9 +127,14 @@ class AudioHandler:
                 output_device_index=OUTPUT_DEVICE_INDEX,
                 frames_per_buffer=chunk * 4  # バッファサイズを4倍に増やして安定化
             )
+            self.logger.info(f"Output stream opened successfully (device={OUTPUT_DEVICE_INDEX})")
+        except OSError as e:
+            self.logger.error(f"Failed to open output stream (device={OUTPUT_DEVICE_INDEX}): {e}")
+            self._list_audio_devices()
+            raise RuntimeError(f"Audio output device not available (device={OUTPUT_DEVICE_INDEX})") from e
         except Exception as e:
-            print(f"Failed to open output stream: {e}")
-            raise e
+            self.logger.error(f"Unexpected error opening output stream: {e}")
+            raise
 
         # Input Stream
         try:
@@ -99,9 +146,21 @@ class AudioHandler:
                 frames_per_buffer=chunk * 3,  # 入力バッファも増やす
                 input_device_index=INPUT_DEVICE_INDEX
             )
+            self.logger.info(f"Input stream opened successfully (device={INPUT_DEVICE_INDEX})")
+        except OSError as e:
+            self.logger.error(f"Failed to open input stream (device={INPUT_DEVICE_INDEX}): {e}")
+            self._list_audio_devices()
+            # 出力ストリームが開いている場合はクリーンアップ
+            if self.output_stream:
+                self.output_stream.stop_stream()
+                self.output_stream.close()
+            raise RuntimeError(f"Audio input device not available (device={INPUT_DEVICE_INDEX})") from e
         except Exception as e:
-            print(f"Failed to open input stream: {e}")
-            raise e
+            self.logger.error(f"Unexpected error opening input stream: {e}")
+            if self.output_stream:
+                self.output_stream.stop_stream()
+                self.output_stream.close()
+            raise
             
         self.chunk_size = chunk
         self.input_callback = input_callback
@@ -136,7 +195,7 @@ class AudioHandler:
             4. ループを繰り返す（_running=Falseまで）
         """
         import audioop
-        print("Starting Record Loop")
+        self.logger.info("Starting audio record loop")
         # ループカウンターは削除（パフォーマンス向上）
         while self._running:
             if self.input_stream.get_read_available() >= self.chunk_size:
@@ -189,14 +248,12 @@ class AudioHandler:
                         # audioop.tostereo(fragment, width, lfactor, rfactor)
                         audio_chunk = audioop.tostereo(audio_chunk, 2, 1, 1)
                     except Exception as e:
-                        print(f"Error upmixing audio: {e}")
-                
+                        self.logger.warning(f"Error upmixing audio to stereo: {e}")
+
                 try:
-                    # ログ出力を削減（パフォーマンス向上）
-                    # print(f"Playing chunk: {len(audio_chunk)} bytes")
                     self.output_stream.write(audio_chunk)
                 except Exception as e:
-                    print(f"[AUDIO] Write error (possibly interrupted): {e}")
+                    self.logger.warning(f"Audio write error (possibly interrupted): {e}")
 
     def stop_playback(self):
         """
@@ -212,12 +269,12 @@ class AudioHandler:
                     if self.output_stream.is_active():
                         self.output_stream.stop_stream()
                     self.output_stream.start_stream()
-                    print("[AUDIO] Output stream stopped and restarted for barge-in")
+                    self.logger.debug("Output stream stopped and restarted for interrupt")
 
                     # リサンプリング状態をリセット
                     self.output_resample_state = None
                 except Exception as e:
-                    print(f"[AUDIO] Error stopping playback: {e}")
+                    self.logger.error(f"Error stopping playback: {e}")
 
     def terminate(self):
         """
@@ -226,5 +283,10 @@ class AudioHandler:
         ストリームを停止し、PyAudioインスタンスを完全に終了します。
         この後、このインスタンスは再利用できません。
         """
-        self.stop_stream()
-        self.p.terminate()
+        try:
+            self.logger.info("Terminating audio handler")
+            self.stop_stream()
+            self.p.terminate()
+            self.logger.debug("Audio handler terminated successfully")
+        except Exception as e:
+            self.logger.error(f"Error during audio handler termination: {e}", exc_info=True)

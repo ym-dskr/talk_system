@@ -10,8 +10,11 @@ import asyncio
 import websockets
 import json
 import base64
+import logging
 from config import OPENAI_API_KEY, REALTIME_URL, REALTIME_MODEL
 from utils.search_utils import TavilySearcher
+
+logger = logging.getLogger(__name__)
 
 
 class RealtimeClient:
@@ -35,7 +38,7 @@ class RealtimeClient:
         on_response_done (callable): AI応答完了時のコールバック
         session_id (str): セッションID
     """
-    def __init__(self, on_audio_delta=None, on_user_transcript=None, on_agent_transcript=None, on_speech_started=None, on_response_done=None, on_response_created=None):
+    def __init__(self, on_audio_delta=None, on_user_transcript=None, on_agent_transcript=None, on_speech_started=None, on_response_done=None, on_response_created=None, max_reconnect_attempts=3, reconnect_delay=2.0):
         """
         RealtimeClientを初期化
 
@@ -46,6 +49,8 @@ class RealtimeClient:
             on_speech_started (callable, optional): ユーザー発話開始時に呼ばれるコールバック
             on_response_done (callable, optional): AI応答完了時に呼ばれるコールバック
             on_response_created (callable, optional): AI応答生成開始時に呼ばれるコールバック（割り込み判定用）
+            max_reconnect_attempts (int, optional): 最大再接続試行回数（デフォルト: 3）
+            reconnect_delay (float, optional): 再接続間隔（秒、デフォルト: 2.0）
         """
         self.ws = None
         self.on_audio_delta = on_audio_delta
@@ -56,10 +61,37 @@ class RealtimeClient:
         self.on_response_created = on_response_created
         self.session_id = None
         self.searcher = TavilySearcher()
+        self.max_reconnect_attempts = max_reconnect_attempts
+        self.reconnect_delay = reconnect_delay
+        self.logger = logging.getLogger(__name__)
 
     async def connect(self):
         """
-        OpenAI Realtime APIに接続してセッションを初期化
+        OpenAI Realtime APIに接続（自動再接続付き）
+
+        WebSocket接続を確立し、セッションを初期化します。
+        接続失敗時は自動的に再接続を試行します。
+
+        Raises:
+            RuntimeError: 最大再接続試行回数を超えた場合
+        """
+        for attempt in range(1, self.max_reconnect_attempts + 1):
+            try:
+                await self._connect_internal()
+                self.logger.info(f"Connected to OpenAI Realtime API (attempt {attempt}/{self.max_reconnect_attempts})")
+                return
+            except Exception as e:
+                self.logger.error(f"Connection attempt {attempt}/{self.max_reconnect_attempts} failed: {e}")
+                if attempt < self.max_reconnect_attempts:
+                    self.logger.info(f"Retrying in {self.reconnect_delay} seconds...")
+                    await asyncio.sleep(self.reconnect_delay)
+                else:
+                    self.logger.error("Failed to connect after maximum reconnection attempts")
+                    raise RuntimeError(f"Failed to connect to OpenAI Realtime API after {self.max_reconnect_attempts} attempts") from e
+
+    async def _connect_internal(self):
+        """
+        OpenAI Realtime APIへの内部接続処理
 
         WebSocket接続を確立し、セッション設定（音声形式、モデル、
         サーバーVAD有効化など）を送信します。接続後、受信ループを開始します。
@@ -80,7 +112,7 @@ class RealtimeClient:
         }
         url = f"{REALTIME_URL}?model={REALTIME_MODEL}"
         self.ws = await websockets.connect(url, additional_headers=headers)
-        print("Connected to OpenAI Realtime API")
+        self.logger.debug("WebSocket connection established")
 
         # Initialize Session
         await self.send_event({
@@ -148,14 +180,13 @@ class RealtimeClient:
             ConnectionClosedOKは正常な切断として無視されます
         """
         if self.ws:
-            # print(f"Sending Event: {event.get('type')}") # Too noisy for audio append
             try:
                 await self.ws.send(json.dumps(event))
             except websockets.exceptions.ConnectionClosedOK:
                 # Normal closure, ignore
                 pass
             except Exception as e:
-                print(f"Error sending event: {e}")
+                self.logger.error(f"Error sending event {event.get('type')}: {e}")
 
     async def send_audio(self, audio_bytes):
         """
@@ -198,9 +229,9 @@ class RealtimeClient:
                 event_type = data.get("type")
 
                 if event_type != "response.audio.delta":
-                    print(f"Received Event: {event_type}")
+                    self.logger.debug(f"Received event: {event_type}")
                     if event_type in ["response.created", "response.done", "conversation.item.created"]:
-                        print(json.dumps(data, indent=2))
+                        self.logger.debug(f"Event details: {json.dumps(data, indent=2)}")
 
                 if event_type == "response.audio.delta":
                     delta = data.get("delta")
@@ -235,14 +266,14 @@ class RealtimeClient:
                     error_data = data.get("error", {})
                     if error_data.get("code") == "response_cancel_not_active":
                         # キャンセル失敗エラーは割り込み処理時に発生しやすいため、デバッグログに留める
-                        print("[API] Info: No active response to cancel.")
+                        self.logger.debug("No active response to cancel (expected during interrupt)")
                     else:
-                        print(f"Realtime API Error: {data}")
+                        self.logger.error(f"Realtime API error: {data}")
 
         except websockets.exceptions.ConnectionClosed:
-            print("Realtime API Connection Closed")
+            self.logger.info("Realtime API connection closed")
         except Exception as e:
-            print(f"Error in receive loop: {e}")
+            self.logger.error(f"Error in receive loop: {e}", exc_info=True)
 
     async def disable_turn_detection(self):
         """
@@ -256,7 +287,7 @@ class RealtimeClient:
             turn_detection を null に設定することで、
             サーバー側のVAD（Voice Activity Detection）を無効化します。
         """
-        print("[API] Disabling turn detection (VAD off)")
+        self.logger.debug("Disabling turn detection (VAD off)")
         await self.send_event({
             "type": "session.update",
             "session": {
@@ -273,7 +304,7 @@ class RealtimeClient:
         Note:
             初期設定と同じ server_vad 設定を使用します。
         """
-        print("[API] Enabling turn detection (VAD on)")
+        self.logger.debug("Enabling turn detection (VAD on)")
         await self.send_event({
             "type": "session.update",
             "session": {
@@ -299,11 +330,11 @@ class RealtimeClient:
             この処理により、AIが喋っている最中にユーザーが話し始めた場合、
             即座にAI音声を停止し、ユーザー発話を優先することができます。
         """
-        print("[API] Sending response.cancel")
+        self.logger.debug("Sending response.cancel to API")
         await self.send_event({
             "type": "response.cancel"
         })
-        print("[API] Cancel response complete")
+        self.logger.debug("Response cancellation complete")
 
     async def _handle_function_call(self, data):
         """
@@ -316,12 +347,12 @@ class RealtimeClient:
         try:
             args = json.loads(arguments_str)
         except Exception as e:
-            print(f"[TOOL] Failed to parse arguments: {e}")
+            self.logger.error(f"Failed to parse function call arguments: {e}")
             return
 
         if fn_name == "web_search":
             query = args.get("query")
-            print(f"[TOOL] Executing web_search for: {query}")
+            self.logger.info(f"Executing web_search for: {query}")
             
             # 検索実行
             result = await self.searcher.search(query)

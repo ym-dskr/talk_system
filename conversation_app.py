@@ -143,71 +143,93 @@ class ConversationApp:
         """
         self.logger.info("Conversation App Started")
 
-        # ================================================================================
-        # 音声ストリームの開始
-        # ================================================================================
-        self.audio.start_stream(input_callback=self.audio_input_callback)
-        asyncio.create_task(self.audio.record_loop())
-
-        # ================================================================================
-        # OpenAI Realtime APIに接続
-        # ================================================================================
         try:
-            await self.client.connect()
-            self.connection_time = time.time()  # 接続時刻を記録
-            self.last_interaction_time = time.time()
-            self.set_state(AppState.LISTENING)
-            self.logger.info("Connected to OpenAI Realtime API")
-        except Exception as e:
-            self.logger.error(f"Failed to connect: {e}")
-            self.gui.running = False
-            return
-
-        # ================================================================================
-        # メインループ
-        # ================================================================================
-        while self.gui.running:
-            # GUI更新（キャラクターアニメーション、テキスト表示、イベント処理）
-            self.gui.update()
-
-            # 無操作タイムアウトチェック（15秒）
-            elapsed = time.time() - self.last_interaction_time
-            if elapsed > self.inactivity_timeout:
-                self.logger.info(f"Inactivity timeout ({self.inactivity_timeout}s elapsed: {elapsed:.1f}s). Exiting conversation.")
+            # ================================================================================
+            # 音声ストリームの開始
+            # ================================================================================
+            try:
+                self.audio.start_stream(input_callback=self.audio_input_callback)
+                asyncio.create_task(self.audio.record_loop())
+            except RuntimeError as e:
+                self.logger.error(f"Failed to initialize audio stream: {e}")
+                self.set_state(AppState.ERROR)
                 self.gui.running = False
-                break
+                return
+            except Exception as e:
+                self.logger.error(f"Unexpected error during audio initialization: {e}", exc_info=True)
+                self.set_state(AppState.ERROR)
+                self.gui.running = False
+                return
 
-            # AI応答音声の再生（キューから取り出して再生）
-            if not self.audio_queue.empty():
-                if not self.is_playing_response:
-                    self.is_playing_response = True
-                    self.set_state(AppState.SPEAKING)
-                self.last_interaction_time = time.time()  # タイムアウトリセット
+            # ================================================================================
+            # OpenAI Realtime APIに接続
+            # ================================================================================
+            try:
+                await self.client.connect()
+                self.connection_time = time.time()  # 接続時刻を記録
+                self.last_interaction_time = time.time()
+                self.set_state(AppState.LISTENING)
+                self.logger.info("Connected to OpenAI Realtime API")
+            except RuntimeError as e:
+                self.logger.error(f"Failed to connect to Realtime API: {e}")
+                self.set_state(AppState.ERROR)
+                self.gui.running = False
+                return
+            except Exception as e:
+                self.logger.error(f"Unexpected error during API connection: {e}", exc_info=True)
+                self.set_state(AppState.ERROR)
+                self.gui.running = False
+                return
 
-                chunk = await self.audio_queue.get()
-                # チャンク取得直後に割り込みが発生していないか再確認
-                if not self.interrupt_active:
-                    # play_audioをスレッドで実行してブロッキングを回避
-                    await asyncio.get_event_loop().run_in_executor(None, self.audio.play_audio, chunk)
-            else:
-                # 音声再生完了時、LISTENINGモードに戻る
-                if self.is_playing_response:
-                    self.is_playing_response = False
-                    self.set_state(AppState.LISTENING)
-                    self.logger.debug("Playback complete, back to LISTENING")
+            # ================================================================================
+            # メインループ
+            # ================================================================================
+            while self.gui.running:
+                # GUI更新（キャラクターアニメーション、テキスト表示、イベント処理）
+                self.gui.update()
 
-                    # 音声再生完了後、Turn Detectionを再有効化してユーザー音声を検知可能にする
-                    asyncio.create_task(self.client.enable_turn_detection())
+                # 無操作タイムアウトチェック（15秒）
+                elapsed = time.time() - self.last_interaction_time
+                if elapsed > self.inactivity_timeout:
+                    self.logger.info(f"Inactivity timeout ({self.inactivity_timeout}s elapsed: {elapsed:.1f}s). Exiting conversation.")
+                    self.gui.running = False
+                    break
 
-                    # ローカルウェイクワード検知を無効化
-                    self.local_interrupt_enabled = False
+                # AI応答音声の再生（キューから取り出して再生）
+                if not self.audio_queue.empty():
+                    if not self.is_playing_response:
+                        self.is_playing_response = True
+                        self.set_state(AppState.SPEAKING)
+                    self.last_interaction_time = time.time()  # タイムアウトリセット
 
-            await asyncio.sleep(0.001)  # イベントループに制御を返す
+                    chunk = await self.audio_queue.get()
+                    # チャンク取得直後に割り込みが発生していないか再確認
+                    if not self.interrupt_active:
+                        # play_audioをスレッドで実行してブロッキングを回避
+                        await asyncio.get_event_loop().run_in_executor(None, self.audio.play_audio, chunk)
+                else:
+                    # 音声再生完了時、LISTENINGモードに戻る
+                    if self.is_playing_response:
+                        self.is_playing_response = False
+                        self.set_state(AppState.LISTENING)
+                        self.logger.debug("Playback complete, back to LISTENING")
 
-        # ================================================================================
-        # クリーンアップ
-        # ================================================================================
-        await self.cleanup()
+                        # 音声再生完了後、Turn Detectionを再有効化してユーザー音声を検知可能にする
+                        asyncio.create_task(self.client.enable_turn_detection())
+
+                        # ローカルウェイクワード検知を無効化
+                        self.local_interrupt_enabled = False
+
+                await asyncio.sleep(0.001)  # イベントループに制御を返す
+
+        except Exception as e:
+            self.logger.error(f"Error in main loop: {e}", exc_info=True)
+            self.set_state(AppState.ERROR)
+        finally:
+            # ================================================================================
+            # クリーンアップ
+            # ================================================================================
+            await self.cleanup()
 
     def audio_input_callback(self, in_data):
         """
