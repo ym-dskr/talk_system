@@ -10,6 +10,7 @@ Live2D風のキャラクターアニメーション、状態インジケータ�
 - 1: LISTENING（聞いている）- 緑色インジケーター
 - 2: PROCESSING（考え中）- 黄色インジケーター
 - 3: SPEAKING（発話中）- 口パクアニメーション
+- 4: ERROR（エラー状態）- 赤色インジケーター
 
 主要機能:
 - フルスクリーン表示（800x600のフォールバック付き）
@@ -47,7 +48,7 @@ class GUIHandler:
         screen_h (int): 画面高さ（ピクセル）
         character (CharacterRenderer): レイヤーベースのキャラクター描画
         animator (AnimationController): アニメーション統合管理
-        state (int): 現在の状態（0=Idle, 1=Listening, 2=Processing, 3=Speaking）
+        state (int): 現在の状態（0=Idle, 1=Listening, 2=Processing, 3=Speaking, 4=Error）
         running (bool): GUI実行中フラグ
         clock (pygame.time.Clock): フレームレート制御
         font (pygame.font.Font): 日本語フォント
@@ -68,6 +69,7 @@ class GUIHandler:
     STATE_LISTENING = 1    # 聞いている（緑色インジケーター）
     STATE_PROCESSING = 2   # 考え中（黄色インジケーター）
     STATE_SPEAKING = 3     # 発話中（口パクアニメーション）
+    STATE_ERROR = 4        # エラー状態（赤色インジケーター）
 
     # ================================================================================
     # ページネーション設定
@@ -281,6 +283,9 @@ class GUIHandler:
         elif self.state == self.STATE_PROCESSING:
             # 黄色の円: AI応答を処理中
             pygame.draw.circle(self.screen, (255, 255, 0), (self.screen_w - 50, 50), 30)
+        elif self.state == self.STATE_ERROR:
+            # 赤色の円: エラー状態
+            pygame.draw.circle(self.screen, (255, 0, 0), (self.screen_w - 50, 50), 30)
 
         # ────────────────────────────────────────────────────────────
         # キャラクターアニメーション描画

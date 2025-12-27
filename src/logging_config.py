@@ -43,11 +43,12 @@ def setup_logging(log_dir: str = "logs", level: int = logging.INFO):
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # ファイルハンドラー（日次ローテーション、7日分保持）
+    # ファイルハンドラー（日次ローテーション、7日分保持、UTF-8エンコーディング）
     file_handler = TimedRotatingFileHandler(
         log_path / "talk_system.log",
         when='midnight',
-        backupCount=7  # 7日分保持
+        backupCount=7,  # 7日分保持
+        encoding='utf-8'  # 日本語の文字化け防止
     )
     file_handler.setFormatter(formatter)
     file_handler.setLevel(level)

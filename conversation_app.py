@@ -93,7 +93,7 @@ class ConversationApp:
         各種コールバックを設定します。
         """
         self.logger = logging.getLogger(__name__)
-        self.state = AppState.LISTENING
+        self.state = AppState.IDLE  # 初期状態はIDLE（接続前）
         self.gui = GUIHandler()
         self.audio = AudioHandler()
 
@@ -144,7 +144,7 @@ class ConversationApp:
                 AppState.LISTENING: 1,
                 AppState.PROCESSING: 2,
                 AppState.SPEAKING: 3,
-                AppState.ERROR: 0
+                AppState.ERROR: 4  # 赤色インジケーター表示
             }
             if new_state in state_map:
                 self.gui.set_state(state_map[new_state])
@@ -233,7 +233,11 @@ class ConversationApp:
                 if not self.audio_queue.empty():
                     if not self.is_playing_response:
                         self.is_playing_response = True
-                        self.set_state(AppState.SPEAKING)
+                        # LISTENING → PROCESSING → SPEAKING の順に遷移
+                        if self.state == AppState.LISTENING:
+                            self.set_state(AppState.PROCESSING)
+                        if self.state == AppState.PROCESSING:
+                            self.set_state(AppState.SPEAKING)
                     self.last_interaction_time = time.time()  # タイムアウトリセット
 
                     chunk = await self.audio_queue.get()
