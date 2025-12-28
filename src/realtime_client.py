@@ -85,6 +85,14 @@ class RealtimeClient:
         self.max_reconnect_attempts = max_reconnect_attempts
         self.reconnect_delay = reconnect_delay
         self.logger = logging.getLogger(__name__)
+        self.receive_task = None
+        self._closing = False
+        self.turn_detection_config = {
+            "type": "server_vad",
+            "threshold": 0.2,
+            "prefix_padding_ms": 300,
+            "silence_duration_ms": 1000
+        }
 
     async def connect(self):
         """
@@ -96,9 +104,11 @@ class RealtimeClient:
         Raises:
             RuntimeError: 最大再接続試行回数を超えた場合
         """
+        self._closing = False
         for attempt in range(1, self.max_reconnect_attempts + 1):
             try:
                 await self._connect_internal()
+                self._start_receive_loop()
                 self.logger.info(f"Connected to OpenAI Realtime API (attempt {attempt}/{self.max_reconnect_attempts})")
                 return
             except Exception as e:
@@ -115,7 +125,7 @@ class RealtimeClient:
         OpenAI Realtime APIへの内部接続処理
 
         WebSocket接続を確立し、セッション設定（音声形式、モデル、
-        サーバーVAD有効化など）を送信します。接続後、受信ループを開始します。
+        サーバーVAD有効化など）を送信します。受信ループはconnect()が起動します。
 
         セッション設定:
             - モダリティ: audio, text
@@ -182,14 +192,39 @@ class RealtimeClient:
                 ],
                 "tool_choice": "auto",
                 "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,           # 音声検知の閾値（0.5=デフォルト、誤検知を減らす）
-                    "prefix_padding_ms": 300,   # 音声開始前のバッファ（ミリ秒）
-                    "silence_duration_ms": 500  # 無音と判定する時間（500ms=より確実に発話終了を判定）
+                    **self.turn_detection_config  # 起動時と再有効化で同じVAD設定を使う
                 }
             }
         })
-        asyncio.create_task(self.receive_loop())
+        # receive_loop is started by connect() to avoid duplicate tasks on reconnect
+
+    def _start_receive_loop(self):
+        if self.receive_task and not self.receive_task.done():
+            return
+        self.receive_task = asyncio.create_task(self.receive_loop())
+
+    def _safe_callback(self, name, callback, *args):
+        if not callback:
+            return
+        try:
+            callback(*args)
+        except Exception as e:
+            self.logger.error(f"Callback {name} failed: {e}", exc_info=True)
+
+    async def _attempt_reconnect(self):
+        if self._closing:
+            return False
+        for attempt in range(1, self.max_reconnect_attempts + 1):
+            try:
+                await self._connect_internal()
+                self.logger.info(f"Reconnected to OpenAI Realtime API (attempt {attempt}/{self.max_reconnect_attempts})")
+                return True
+            except Exception as e:
+                self.logger.error(f"Reconnection attempt {attempt}/{self.max_reconnect_attempts} failed: {e}")
+                if attempt < self.max_reconnect_attempts:
+                    await asyncio.sleep(self.reconnect_delay)
+        self.logger.error("Failed to reconnect after maximum attempts")
+        return False
 
     async def send_event(self, event):
         """
@@ -248,84 +283,91 @@ class RealtimeClient:
         Note:
             このメソッドはconnect()内で自動的にタスクとして起動されます
         """
-        try:
-            async for message in self.ws:
-                data = json.loads(message)
-                event_type = data.get("type")
+        while not self._closing:
+            try:
+                async for message in self.ws:
+                    data = json.loads(message)
+                    event_type = data.get("type")
 
-                # すべてのイベントをログ出力（デバッグ用）
-                if event_type != "response.audio.delta":
-                    self.logger.info(f"[API Event] {event_type}")
-                    if event_type in ["response.created", "response.done", "conversation.item.created", "error", "session.created", "session.updated"]:
-                        self.logger.info(f"[API Event Details] {json.dumps(data, indent=2)}")
+                    # すべてのイベントをログ出力（デバッグ用）
+                    if event_type != "response.audio.delta":
+                        self.logger.info(f"[API Event] {event_type}")
+                        if event_type in ["response.created", "response.done", "conversation.item.created", "error", "session.created", "session.updated"]:
+                            self.logger.info(f"[API Event Details] {json.dumps(data, indent=2)}")
 
-                if event_type == "response.audio.delta":
-                    delta = data.get("delta")
-                    if delta and self.on_audio_delta:
-                        audio_bytes = base64.b64decode(delta)
-                        self.on_audio_delta(audio_bytes)
+                    if event_type == "response.audio.delta":
+                        delta = data.get("delta")
+                        if delta and self.on_audio_delta:
+                            audio_bytes = base64.b64decode(delta)
+                            self._safe_callback("on_audio_delta", self.on_audio_delta, audio_bytes)
 
-                elif event_type == "input_audio_buffer.speech_started":
-                    if self.on_speech_started:
-                        self.on_speech_started()
+                    elif event_type == "input_audio_buffer.speech_started":
+                        self._safe_callback("on_speech_started", self.on_speech_started)
 
-                elif event_type == "conversation.item.input_audio_transcription.completed":
-                    if self.on_user_transcript:
-                        self.on_user_transcript(data.get("transcript"))
+                    elif event_type == "conversation.item.input_audio_transcription.completed":
+                        self._safe_callback("on_user_transcript", self.on_user_transcript, data.get("transcript"))
 
-                elif event_type == "response.audio_transcript.done":
-                    if self.on_agent_transcript:
-                        self.on_agent_transcript(data.get("transcript"))
+                    elif event_type == "response.audio_transcript.done":
+                        self._safe_callback("on_agent_transcript", self.on_agent_transcript, data.get("transcript"))
 
-                elif event_type == "response.created":
-                    if self.on_response_created:
-                        self.on_response_created()
+                    elif event_type == "response.created":
+                        self._safe_callback("on_response_created", self.on_response_created)
 
-                elif event_type == "response.done":
-                    # response.doneでモデルアクセスエラーをチェック
-                    response_data = data.get("response", {})
-                    status = response_data.get("status")
-                    if status == "failed":
-                        status_details = response_data.get("status_details", {})
-                        error = status_details.get("error", {})
-                        error_code = error.get("code")
-                        error_message = error.get("message", "No message")
+                    elif event_type == "response.done":
+                        # response.doneでモデルアクセスエラーをチェック
+                        response_data = data.get("response", {})
+                        status = response_data.get("status")
+                        if status == "failed":
+                            status_details = response_data.get("status_details", {})
+                            error = status_details.get("error", {})
+                            error_code = error.get("code")
+                            error_message = error.get("message", "No message")
 
-                        if error_code == "model_not_found":
-                            self.logger.error(f"[MODEL ACCESS ERROR] {error_message}")
-                            self.logger.error("Please check:")
-                            self.logger.error("1. Your OpenAI account has paid tier access")
-                            self.logger.error("2. The model name is correct: gpt-realtime-mini-2025-12-15")
-                            self.logger.error("3. Your API key has access to this model")
+                            if error_code == "model_not_found":
+                                self.logger.error(f"[MODEL ACCESS ERROR] {error_message}")
+                                self.logger.error("Please check:")
+                                self.logger.error("1. Your OpenAI account has paid tier access")
+                                self.logger.error("2. The model name is correct: gpt-realtime-mini-2025-12-15")
+                                self.logger.error("3. Your API key has access to this model")
 
-                    if self.on_response_done:
-                        self.on_response_done()
+                        self._safe_callback("on_response_done", self.on_response_done)
 
-                elif event_type == "session.created":
-                    self.logger.info(f"Session created successfully: {data.get('session', {}).get('id')}")
+                    elif event_type == "session.created":
+                        self.logger.info(f"Session created successfully: {data.get('session', {}).get('id')}")
 
-                elif event_type == "session.updated":
-                    self.logger.info("Session updated successfully")
+                    elif event_type == "session.updated":
+                        self.logger.info("Session updated successfully")
 
-                elif event_type == "response.function_call_arguments.done":
-                    await self._handle_function_call(data)
+                    elif event_type == "response.function_call_arguments.done":
+                        try:
+                            await self._handle_function_call(data)
+                        except Exception as e:
+                            self.logger.error(f"Error handling function call: {e}", exc_info=True)
 
-                elif event_type == "error":
-                    error_data = data.get("error", {})
-                    error_code = error_data.get("code")
-                    error_message = error_data.get("message", "No message")
+                    elif event_type == "error":
+                        error_data = data.get("error", {})
+                        error_code = error_data.get("code")
+                        error_message = error_data.get("message", "No message")
 
-                    if error_code == "response_cancel_not_active":
-                        # キャンセル失敗エラーは割り込み処理時に発生しやすいため、デバッグログに留める
-                        self.logger.debug("No active response to cancel (expected during interrupt)")
-                    else:
-                        self.logger.error(f"[REALTIME API ERROR] Code: {error_code}, Message: {error_message}")
-                        self.logger.error(f"[REALTIME API ERROR] Full data: {json.dumps(data, indent=2)}")
+                        if error_code == "response_cancel_not_active":
+                            # キャンセル失敗エラーは割り込み処理時に発生しやすいため、デバッグログに留める
+                            self.logger.debug("No active response to cancel (expected during interrupt)")
+                        else:
+                            self.logger.error(f"[REALTIME API ERROR] Code: {error_code}, Message: {error_message}")
+                            self.logger.error(f"[REALTIME API ERROR] Full data: {json.dumps(data, indent=2)}")
 
-        except websockets.exceptions.ConnectionClosed:
-            self.logger.info("Realtime API connection closed")
-        except Exception as e:
-            self.logger.error(f"Error in receive loop: {e}", exc_info=True)
+                self.logger.info("Realtime API connection closed")
+            except asyncio.CancelledError:
+                break
+            except websockets.exceptions.ConnectionClosed:
+                self.logger.info("Realtime API connection closed")
+            except Exception as e:
+                self.logger.error(f"Error in receive loop: {e}", exc_info=True)
+
+            if self._closing:
+                break
+            if not await self._attempt_reconnect():
+                break
 
     async def disable_turn_detection(self):
         """
@@ -360,12 +402,7 @@ class RealtimeClient:
         await self.send_event({
             "type": "session.update",
             "session": {
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,           # 音声検知の閾値（0.5=デフォルト、誤検知を減らす）
-                    "prefix_padding_ms": 300,   # 音声開始前のバッファ
-                    "silence_duration_ms": 500  # 無音と判定する時間（500ms=より確実に発話終了を判定）
-                }
+                "turn_detection": dict(self.turn_detection_config)
             }
         })
 
@@ -428,5 +465,9 @@ class RealtimeClient:
 
         OpenAI Realtime APIとのWebSocket接続を正常に切断します。
         """
+        self._closing = True
         if self.ws:
             await self.ws.close()
+        if self.receive_task and not self.receive_task.done():
+            self.receive_task.cancel()
+            await asyncio.gather(self.receive_task, return_exceptions=True)

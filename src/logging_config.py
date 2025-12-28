@@ -5,12 +5,39 @@
 """
 
 import logging
+import re
 import sys
 from pathlib import Path
 from logging.handlers import TimedRotatingFileHandler
+from typing import Optional
 
 
-def setup_logging(log_dir: str = "logs", level: int = logging.INFO):
+class SensitiveDataFilter(logging.Filter):
+    """Redact sensitive values (e.g., bearer tokens) from log messages."""
+
+    _patterns = (
+        (re.compile(r"(Authorization\s*:\s*Bearer\s+)([^\s]+)", re.IGNORECASE), r"\1[REDACTED]"),
+        (re.compile(r"(Bearer\s+)([A-Za-z0-9._-]+)"), r"\1[REDACTED]"),
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+
+        sanitized = message
+        for pattern, replacement in self._patterns:
+            sanitized = pattern.sub(replacement, sanitized)
+
+        if sanitized != message:
+            record.msg = sanitized
+            record.args = ()
+
+        return True
+
+
+def setup_logging(log_dir: str = "logs", level: int = logging.INFO, file_level: Optional[int] = None):
     """
     ロギング設定を初期化
 
@@ -20,6 +47,7 @@ def setup_logging(log_dir: str = "logs", level: int = logging.INFO):
     Args:
         log_dir: ログファイル出力ディレクトリ（デフォルト: "logs"）
         level: ログレベル（デフォルト: logging.INFO）
+        file_level: ファイルログのレベル（Noneの場合はINFO以上に制限）
 
     Returns:
         ルートロガー
@@ -51,7 +79,9 @@ def setup_logging(log_dir: str = "logs", level: int = logging.INFO):
         encoding='utf-8'  # 日本語の文字化け防止
     )
     file_handler.setFormatter(formatter)
-    file_handler.setLevel(level)
+    if file_level is None:
+        file_level = max(level, logging.INFO)
+    file_handler.setLevel(file_level)
 
     # コンソールハンドラー
     console_handler = logging.StreamHandler(sys.stdout)
@@ -65,8 +95,16 @@ def setup_logging(log_dir: str = "logs", level: int = logging.INFO):
     # 既存のハンドラーをクリア（重複を防ぐ）
     root_logger.handlers.clear()
 
+    sensitive_filter = SensitiveDataFilter()
+    file_handler.addFilter(sensitive_filter)
+    console_handler.addFilter(sensitive_filter)
+
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
+
+    # Avoid leaking headers via verbose websocket logs.
+    for logger_name in ("websockets", "websockets.client", "websockets.server", "websockets.protocol"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     # 初期化完了メッセージ
     root_logger.info(f"Logging initialized (log_dir={log_dir}, level={logging.getLevelName(level)})")

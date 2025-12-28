@@ -61,8 +61,8 @@ from src.state_machine import AppState, StateTransition
 from src.logging_config import setup_logging
 from src.event_queue import EventQueue, Event, EventType
 
-# ロギング初期化（DEBUGレベルで詳細ログ出力）
-setup_logging(level=logging.DEBUG)
+# ロギング初期化（本番はINFOをデフォルトにし、必要時のみDEBUG）
+setup_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -480,6 +480,9 @@ class ConversationApp:
             AI応答中の割り込みはローカルウェイクワード検知で処理されるため、
             ここでは終了キーワードのみチェックします。
         """
+        if text is None:
+            self.logger.debug("User transcript missing; skipping keyword check")
+            return
         self.logger.info(f"User: {text}")
         self.gui.set_user_text(text)
 
