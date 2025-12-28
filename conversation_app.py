@@ -262,7 +262,9 @@ class ConversationApp:
                         self.logger.debug("Playback complete, back to LISTENING")
 
                         # 音声再生完了後、Turn Detectionを再有効化してユーザー音声を検知可能にする
-                        asyncio.create_task(self.client.enable_turn_detection())
+                        task = asyncio.create_task(self.client.enable_turn_detection())
+                        self.tasks.add(task)
+                        task.add_done_callback(self.tasks.discard)
 
                         # ローカルウェイクワード検知を無効化
                         self.local_interrupt_enabled = False
@@ -368,7 +370,9 @@ class ConversationApp:
         self.last_interaction_time = time.time()  # タイムアウトリセット
 
         # AI応答中はユーザーの音声を検知しないよう、Turn Detectionを無効化
-        asyncio.create_task(self.client.disable_turn_detection())
+        task = asyncio.create_task(self.client.disable_turn_detection())
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
 
         # ローカルウェイクワード検知を有効化（AI応答中の割り込み用）
         self.local_interrupt_enabled = True
@@ -393,7 +397,9 @@ class ConversationApp:
         # 音声キューが空の場合（キャンセルされた場合）に即座に有効化
         if self.audio_queue.empty():
             self.logger.debug("Response cancelled or empty, re-enabling turn detection immediately")
-            asyncio.create_task(self.client.enable_turn_detection())
+            task = asyncio.create_task(self.client.enable_turn_detection())
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
 
     def handle_audio_delta(self, audio_bytes):
         """
@@ -446,7 +452,9 @@ class ConversationApp:
 
         # Realtime APIに中断を通知
         if self.response_in_progress:
-            asyncio.create_task(self.client.cancel_response())
+            task = asyncio.create_task(self.client.cancel_response())
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
 
         self.response_in_progress = False
         self.is_playing_response = False
@@ -459,7 +467,9 @@ class ConversationApp:
         self.local_interrupt_enabled = False
 
         # 割り込み後、Turn Detectionを再有効化してユーザーの次の発話を受け付ける
-        asyncio.create_task(self.client.enable_turn_detection())
+        task = asyncio.create_task(self.client.enable_turn_detection())
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
         self.logger.debug("Interrupt complete - back to LISTENING")
 
     def handle_user_transcript(self, text):
@@ -478,7 +488,9 @@ class ConversationApp:
         if any(kw in text for kw in exit_keywords):
             self.logger.info(f"Exit keyword detected in user speech: {text}")
             # AIが最後に応答する時間を少しだけ確保してから終了するようにスケジュール
-            asyncio.create_task(self.delayed_exit(2.0))
+            task = asyncio.create_task(self.delayed_exit(2.0))
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
 
     async def delayed_exit(self, delay):
         """
