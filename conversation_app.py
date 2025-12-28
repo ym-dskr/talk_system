@@ -61,8 +61,8 @@ from src.state_machine import AppState, StateTransition
 from src.logging_config import setup_logging
 from src.event_queue import EventQueue, Event, EventType
 
-# ロギング初期化
-setup_logging()
+# ロギング初期化（DEBUGレベルで詳細ログ出力）
+setup_logging(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -381,10 +381,19 @@ class ConversationApp:
 
         OpenAI Realtime APIがAI応答の生成を完了した際に呼ばれます。
         応答生成中フラグをクリアします。
+
+        応答が完了またはキャンセルされた場合、Turn Detectionを再有効化して
+        次のユーザー発話を検知できるようにします。
         """
         self.logger.debug("AI response completed")
         self.response_in_progress = False
         self.last_interaction_time = time.time()  # タイムアウトリセット
+
+        # Turn Detectionを再有効化（次のユーザー発話を検知可能にする）
+        # 音声キューが空の場合（キャンセルされた場合）に即座に有効化
+        if self.audio_queue.empty():
+            self.logger.debug("Response cancelled or empty, re-enabling turn detection immediately")
+            asyncio.create_task(self.client.enable_turn_detection())
 
     def handle_audio_delta(self, audio_bytes):
         """
@@ -416,6 +425,11 @@ class ConversationApp:
         音声キューのクリア、音声再生停止、APIへのキャンセル送信を行います。
         """
         self.logger.info("Executing interrupt")
+
+        # 既にLISTENING状態の場合は何もしない（重複検知を防ぐ）
+        if self.state == AppState.LISTENING:
+            self.logger.debug("Already in LISTENING state, skipping interrupt")
+            return
 
         # 割り込みフラグを立てる（新しい音声チャンクを拒否）
         self.interrupt_active = True

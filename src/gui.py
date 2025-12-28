@@ -275,17 +275,34 @@ class GUIHandler:
         self.screen.fill((255, 255, 255))  # 白背景
 
         # ────────────────────────────────────────────────────────────
-        # 状態インジケーター（右上の円）
+        # 状態インジケーター（右上の円 + ラベル）
         # ────────────────────────────────────────────────────────────
-        if self.state == self.STATE_LISTENING:
-            # 緑色の円: ユーザー発話を聞いている状態
-            pygame.draw.circle(self.screen, (0, 255, 0), (self.screen_w - 50, 50), 30)
-        elif self.state == self.STATE_PROCESSING:
-            # 黄色の円: AI応答を処理中
-            pygame.draw.circle(self.screen, (255, 255, 0), (self.screen_w - 50, 50), 30)
-        elif self.state == self.STATE_ERROR:
-            # 赤色の円: エラー状態
-            pygame.draw.circle(self.screen, (255, 0, 0), (self.screen_w - 50, 50), 30)
+        indicator_x = self.screen_w - 80
+        indicator_y = 60
+        indicator_radius = 40
+
+        # 状態ごとの色とラベル設定
+        state_config = {
+            self.STATE_IDLE: ((128, 128, 128), "IDLE"),          # グレー: 待機中
+            self.STATE_LISTENING: ((0, 220, 0), "LISTENING"),    # 明るい緑: 聞いている
+            self.STATE_PROCESSING: ((255, 200, 0), "THINKING"),  # オレンジ: 考え中
+            self.STATE_SPEAKING: ((0, 120, 255), "SPEAKING"),    # 青: 話している
+            self.STATE_ERROR: ((255, 50, 50), "ERROR")           # 赤: エラー
+        }
+
+        if self.state in state_config:
+            color, label = state_config[self.state]
+
+            # 外側の円（白い縁取り）
+            pygame.draw.circle(self.screen, (255, 255, 255), (indicator_x, indicator_y), indicator_radius + 4)
+            # 内側の円（状態色）
+            pygame.draw.circle(self.screen, color, (indicator_x, indicator_y), indicator_radius)
+
+            # 状態ラベルを円の下に表示
+            label_font = pygame.font.Font(None, 24)
+            label_surf = label_font.render(label, True, (50, 50, 50))
+            label_rect = label_surf.get_rect(center=(indicator_x, indicator_y + indicator_radius + 20))
+            self.screen.blit(label_surf, label_rect)
 
         # ────────────────────────────────────────────────────────────
         # キャラクターアニメーション描画

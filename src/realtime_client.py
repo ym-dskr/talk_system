@@ -183,9 +183,9 @@ class RealtimeClient:
                 "tool_choice": "auto",
                 "turn_detection": {
                     "type": "server_vad",
-                    "threshold": 0.1,           # 音声検知の閾値（0.0-1.0、低いほど敏感）
+                    "threshold": 0.5,           # 音声検知の閾値（0.5=デフォルト、誤検知を減らす）
                     "prefix_padding_ms": 300,   # 音声開始前のバッファ（ミリ秒）
-                    "silence_duration_ms": 200  # 無音と判定する時間（ミリ秒、短くして反応を早く）
+                    "silence_duration_ms": 500  # 無音と判定する時間（500ms=より確実に発話終了を判定）
                 }
             }
         })
@@ -223,6 +223,7 @@ class RealtimeClient:
         """
         # audio_bytes is raw pcm16, need to base64 encode
         b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
+        self.logger.debug(f"Sending audio chunk: {len(audio_bytes)} bytes")
         await self.send_event({
             "type": "input_audio_buffer.append",
             "audio": b64_audio
@@ -252,10 +253,11 @@ class RealtimeClient:
                 data = json.loads(message)
                 event_type = data.get("type")
 
+                # すべてのイベントをログ出力（デバッグ用）
                 if event_type != "response.audio.delta":
-                    self.logger.debug(f"Received event: {event_type}")
-                    if event_type in ["response.created", "response.done", "conversation.item.created"]:
-                        self.logger.debug(f"Event details: {json.dumps(data, indent=2)}")
+                    self.logger.info(f"[API Event] {event_type}")
+                    if event_type in ["response.created", "response.done", "conversation.item.created", "error", "session.created", "session.updated"]:
+                        self.logger.info(f"[API Event Details] {json.dumps(data, indent=2)}")
 
                 if event_type == "response.audio.delta":
                     delta = data.get("delta")
@@ -280,19 +282,45 @@ class RealtimeClient:
                         self.on_response_created()
 
                 elif event_type == "response.done":
+                    # response.doneでモデルアクセスエラーをチェック
+                    response_data = data.get("response", {})
+                    status = response_data.get("status")
+                    if status == "failed":
+                        status_details = response_data.get("status_details", {})
+                        error = status_details.get("error", {})
+                        error_code = error.get("code")
+                        error_message = error.get("message", "No message")
+
+                        if error_code == "model_not_found":
+                            self.logger.error(f"[MODEL ACCESS ERROR] {error_message}")
+                            self.logger.error("Please check:")
+                            self.logger.error("1. Your OpenAI account has paid tier access")
+                            self.logger.error("2. The model name is correct: gpt-realtime-mini-2025-12-15")
+                            self.logger.error("3. Your API key has access to this model")
+
                     if self.on_response_done:
                         self.on_response_done()
+
+                elif event_type == "session.created":
+                    self.logger.info(f"Session created successfully: {data.get('session', {}).get('id')}")
+
+                elif event_type == "session.updated":
+                    self.logger.info("Session updated successfully")
 
                 elif event_type == "response.function_call_arguments.done":
                     await self._handle_function_call(data)
 
                 elif event_type == "error":
                     error_data = data.get("error", {})
-                    if error_data.get("code") == "response_cancel_not_active":
+                    error_code = error_data.get("code")
+                    error_message = error_data.get("message", "No message")
+
+                    if error_code == "response_cancel_not_active":
                         # キャンセル失敗エラーは割り込み処理時に発生しやすいため、デバッグログに留める
                         self.logger.debug("No active response to cancel (expected during interrupt)")
                     else:
-                        self.logger.error(f"Realtime API error: {data}")
+                        self.logger.error(f"[REALTIME API ERROR] Code: {error_code}, Message: {error_message}")
+                        self.logger.error(f"[REALTIME API ERROR] Full data: {json.dumps(data, indent=2)}")
 
         except websockets.exceptions.ConnectionClosed:
             self.logger.info("Realtime API connection closed")
@@ -334,9 +362,9 @@ class RealtimeClient:
             "session": {
                 "turn_detection": {
                     "type": "server_vad",
-                    "threshold": 0.1,           # 音声検知の閾値
+                    "threshold": 0.5,           # 音声検知の閾値（0.5=デフォルト、誤検知を減らす）
                     "prefix_padding_ms": 300,   # 音声開始前のバッファ
-                    "silence_duration_ms": 200  # 無音と判定する時間
+                    "silence_duration_ms": 500  # 無音と判定する時間（500ms=より確実に発話終了を判定）
                 }
             }
         })

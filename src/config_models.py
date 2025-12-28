@@ -53,7 +53,7 @@ class RealtimeAPIConfig(BaseModel):
         max_reconnect_attempts: 最大再接続試行回数
         reconnect_delay: 再接続間隔（秒）
     """
-    model: str = Field(default="gpt-4o-mini-realtime-preview", description="Realtime APIモデル")
+    model: str = Field(default="gpt-realtime-mini-2025-12-15", description="Realtime APIモデル")
     url: str = Field(default="wss://api.openai.com/v1/realtime", description="WebSocket URL")
     max_reconnect_attempts: int = Field(default=3, description="最大再接続試行回数")
     reconnect_delay: float = Field(default=2.0, description="再接続間隔（秒）")

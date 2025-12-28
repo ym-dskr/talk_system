@@ -85,5 +85,5 @@ if _app_config:
     REALTIME_MODEL = _app_config.realtime.model
     REALTIME_URL = _app_config.realtime.url
 else:
-    REALTIME_MODEL = "gpt-4o-mini-realtime-preview"
+    REALTIME_MODEL = "gpt-realtime-mini-2025-12-15"
     REALTIME_URL = "wss://api.openai.com/v1/realtime"
