@@ -121,6 +121,7 @@ class ConversationApp:
         self.interrupt_active = False           # 割り込み中フラグ（TODO: Phase 2.3で削除）
         self.inactivity_timeout = 180.0         # 無操作タイムアウト（180秒 = 3分）
         self.connection_time = 0                # API接続時刻（ノイズ除外用）
+        self.exit_requested = False             # 終了キーワード検知時にTrue（重複終了を防止）
 
         # ローカルウェイクワード検知（割り込み用）
         self.wake_word = WakeWordEngine()       # Porcupineエンジン
@@ -258,6 +259,7 @@ class ConversationApp:
                     # 音声再生完了時、LISTENINGモードに戻る
                     if self.is_playing_response:
                         self.is_playing_response = False
+                        self.local_interrupt_enabled = False
                         self.set_state(AppState.LISTENING)
                         self.logger.debug("Playback complete, back to LISTENING")
 
@@ -265,9 +267,6 @@ class ConversationApp:
                         task = asyncio.create_task(self.client.enable_turn_detection())
                         self.tasks.add(task)
                         task.add_done_callback(self.tasks.discard)
-
-                        # ローカルウェイクワード検知を無効化
-                        self.local_interrupt_enabled = False
 
                 await asyncio.sleep(0.001)  # イベントループに制御を返す
 
@@ -487,13 +486,15 @@ class ConversationApp:
         self.gui.set_user_text(text)
 
         # 終了キーワードのチェック
-        exit_keywords = ["ストップ", "おわり", "終わり", "終了", "バイバイ", "さようなら", "またね"]
+        exit_keywords = ["ストップ", "おわり", "終わり", "おしまい", "終了", "バイバイ", "さようなら", "またね"]
         if any(kw in text for kw in exit_keywords):
             self.logger.info(f"Exit keyword detected in user speech: {text}")
-            # AIが最後に応答する時間を少しだけ確保してから終了するようにスケジュール
-            task = asyncio.create_task(self.delayed_exit(2.0))
-            self.tasks.add(task)
-            task.add_done_callback(self.tasks.discard)
+            if not self.exit_requested:
+                self.exit_requested = True
+                self.logger.info("Exit requested; will quit in 3 seconds")
+                task = asyncio.create_task(self.delayed_exit(3.0))
+                self.tasks.add(task)
+                task.add_done_callback(self.tasks.discard)
 
     async def delayed_exit(self, delay):
         """

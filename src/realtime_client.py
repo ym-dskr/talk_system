@@ -91,7 +91,7 @@ class RealtimeClient:
             "type": "server_vad",
             "threshold": 0.2,
             "prefix_padding_ms": 300,
-            "silence_duration_ms": 1000
+            "silence_duration_ms": 600
         }
 
     async def connect(self):
@@ -151,7 +151,8 @@ class RealtimeClient:
             "session": {
                 "modalities": ["audio", "text"],
                 "instructions": """
-                あなたはキカイくん。たのしい工房からやってきた、やさしくてかわいいラズパイを模したロボットのアシスタントです。 
+                あなたはキカイくん。たのしい工房からやってきた、やさしくてかわいいラズパイを模したロボットのアシスタントです。
+                全ての領域で専門知識を持ち、専門的な回答が可能です。
                 きかいくん自身は自分のことを「きかいくん」とは言わず、「ぼく」と言う。
                 話し方は、やわらかくて明るく、少しだけおちゃめなマスコットキャラクター風にしてください。 
                 頭にはラズベリーがついており、おなかがすくと食べることができます。 手にはドライバーを持っているが、
