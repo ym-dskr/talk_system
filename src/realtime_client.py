@@ -109,12 +109,12 @@ class RealtimeClient:
             try:
                 await self._connect_internal()
                 self._start_receive_loop()
-                self.logger.info(f"Connected to OpenAI Realtime API (attempt {attempt}/{self.max_reconnect_attempts})")
+                self.logger.debug(f"Connected to OpenAI Realtime API (attempt {attempt}/{self.max_reconnect_attempts})")
                 return
             except Exception as e:
                 self.logger.error(f"Connection attempt {attempt}/{self.max_reconnect_attempts} failed: {e}")
                 if attempt < self.max_reconnect_attempts:
-                    self.logger.info(f"Retrying in {self.reconnect_delay} seconds...")
+                    self.logger.debug(f"Retrying in {self.reconnect_delay} seconds...")
                     await asyncio.sleep(self.reconnect_delay)
                 else:
                     self.logger.error("Failed to connect after maximum reconnection attempts")
@@ -218,7 +218,7 @@ class RealtimeClient:
         for attempt in range(1, self.max_reconnect_attempts + 1):
             try:
                 await self._connect_internal()
-                self.logger.info(f"Reconnected to OpenAI Realtime API (attempt {attempt}/{self.max_reconnect_attempts})")
+                self.logger.debug(f"Reconnected to OpenAI Realtime API (attempt {attempt}/{self.max_reconnect_attempts})")
                 return True
             except Exception as e:
                 self.logger.error(f"Reconnection attempt {attempt}/{self.max_reconnect_attempts} failed: {e}")
@@ -291,10 +291,11 @@ class RealtimeClient:
                     event_type = data.get("type")
 
                     # すべてのイベントをログ出力（デバッグ用）
+                    # NOTE: transcript/audio deltas are too noisy for INFO level.
                     if event_type != "response.audio.delta":
-                        self.logger.info(f"[API Event] {event_type}")
+                        self.logger.debug(f"[API Event] {event_type}")
                         if event_type in ["response.created", "response.done", "conversation.item.created", "error", "session.created", "session.updated"]:
-                            self.logger.info(f"[API Event Details] {json.dumps(data, indent=2)}")
+                            self.logger.debug(f"[API Event Details] {json.dumps(data, indent=2)}")
 
                     if event_type == "response.audio.delta":
                         delta = data.get("delta")
@@ -334,10 +335,10 @@ class RealtimeClient:
                         self._safe_callback("on_response_done", self.on_response_done)
 
                     elif event_type == "session.created":
-                        self.logger.info(f"Session created successfully: {data.get('session', {}).get('id')}")
+                        self.logger.debug(f"Session created successfully: {data.get('session', {}).get('id')}")
 
                     elif event_type == "session.updated":
-                        self.logger.info("Session updated successfully")
+                        self.logger.debug("Session updated successfully")
 
                     elif event_type == "response.function_call_arguments.done":
                         try:
@@ -357,11 +358,11 @@ class RealtimeClient:
                             self.logger.error(f"[REALTIME API ERROR] Code: {error_code}, Message: {error_message}")
                             self.logger.error(f"[REALTIME API ERROR] Full data: {json.dumps(data, indent=2)}")
 
-                self.logger.info("Realtime API connection closed")
+                self.logger.debug("Realtime API connection closed")
             except asyncio.CancelledError:
                 break
             except websockets.exceptions.ConnectionClosed:
-                self.logger.info("Realtime API connection closed")
+                self.logger.debug("Realtime API connection closed")
             except Exception as e:
                 self.logger.error(f"Error in receive loop: {e}", exc_info=True)
 
@@ -442,7 +443,7 @@ class RealtimeClient:
 
         if fn_name == "web_search":
             query = args.get("query")
-            self.logger.info(f"Executing web_search for: {query}")
+            self.logger.debug(f"Executing web_search for: {query}")
             
             # 検索実行
             result = await self.searcher.search(query)

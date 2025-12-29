@@ -143,7 +143,7 @@ class ConversationApp:
         if StateTransition.is_valid_transition(self.state, new_state):
             old_state = self.state
             self.state = new_state
-            self.logger.info(f"State transition: {old_state.name} → {new_state.name}")
+            self.logger.debug(f"State transition: {old_state.name} → {new_state.name}")
 
             # GUIに状態を反映（既存のマッピング）
             state_map = {
@@ -182,7 +182,7 @@ class ConversationApp:
         - PyAudio音声処理は別スレッドのコールバックとして並行実行されます
         - 各処理間の通信はキューとコールバックで行われます
         """
-        self.logger.info("Conversation App Started")
+        self.logger.debug("Conversation App Started")
 
         try:
             # ================================================================================
@@ -210,7 +210,7 @@ class ConversationApp:
                 self.connection_time = time.time()  # 接続時刻を記録
                 self.last_interaction_time = time.time()
                 self.set_state(AppState.LISTENING)
-                self.logger.info("Connected to OpenAI Realtime API")
+                self.logger.debug("Connected to OpenAI Realtime API")
             except RuntimeError as e:
                 self.logger.error(f"Failed to connect to Realtime API: {e}")
                 self.set_state(AppState.ERROR)
@@ -232,7 +232,7 @@ class ConversationApp:
                 # 無操作タイムアウトチェック（15秒）
                 elapsed = time.time() - self.last_interaction_time
                 if elapsed > self.inactivity_timeout:
-                    self.logger.info(f"Inactivity timeout ({self.inactivity_timeout}s elapsed: {elapsed:.1f}s). Exiting conversation.")
+                    self.logger.debug(f"Inactivity timeout ({self.inactivity_timeout}s elapsed: {elapsed:.1f}s). Exiting conversation.")
                     self.gui.running = False
                     break
 
@@ -324,7 +324,7 @@ class ConversationApp:
                     # Porcupineでウェイクワード検知
                     keyword_index = self.wake_word.process(frame)
                     if keyword_index >= 0:
-                        self.logger.info("Wake word detected - interrupting AI response")
+                        self.logger.debug("Wake word detected - interrupting AI response")
                         # 割り込み処理を実行
                         self.execute_interrupt()
 
@@ -429,7 +429,7 @@ class ConversationApp:
         AI応答中にユーザーが特定のキーワードを発話した際に呼ばれます。
         音声キューのクリア、音声再生停止、APIへのキャンセル送信を行います。
         """
-        self.logger.info("Executing interrupt")
+        self.logger.debug("Executing interrupt")
 
         # 既にLISTENING状態の場合は何もしない（重複検知を防ぐ）
         if self.state == AppState.LISTENING:
@@ -488,10 +488,10 @@ class ConversationApp:
         # 終了キーワードのチェック
         exit_keywords = ["ストップ", "おわり", "終わり", "おしまい", "終了", "バイバイ", "さようなら", "またね"]
         if any(kw in text for kw in exit_keywords):
-            self.logger.info(f"Exit keyword detected in user speech: {text}")
+            self.logger.debug(f"Exit keyword detected in user speech: {text}")
             if not self.exit_requested:
                 self.exit_requested = True
-                self.logger.info("Exit requested; will quit in 3 seconds")
+                self.logger.debug("Exit requested; will quit in 3 seconds")
                 task = asyncio.create_task(self.delayed_exit(3.0))
                 self.tasks.add(task)
                 task.add_done_callback(self.tasks.discard)
@@ -501,7 +501,7 @@ class ConversationApp:
         指定秒数後にアプリを終了する
         """
         await asyncio.sleep(delay)
-        self.logger.info("Exiting application by voice command")
+        self.logger.debug("Exiting application by voice command")
         self.gui.running = False
 
     def handle_agent_transcript(self, text):
@@ -548,7 +548,7 @@ class ConversationApp:
         WebSocket接続を切断し、音声ストリームを停止し、
         GUIを終了します。
         """
-        self.logger.info("Starting cleanup...")
+        self.logger.debug("Starting cleanup...")
 
         # 1. 停止シグナル設定
         self.stop_event.set()
@@ -586,13 +586,13 @@ class ConversationApp:
             except Exception as e:
                 self.logger.error(f"Error deleting wake word engine: {e}")
 
-        self.logger.info("Cleanup completed")
+        self.logger.debug("Cleanup completed")
 
 if __name__ == "__main__":
     app = ConversationApp()
     try:
         asyncio.run(app.run())
     except KeyboardInterrupt:
-        logger.info("Application interrupted by user")
+        logger.debug("Application interrupted by user")
     except Exception as e:
         logger.error(f"Application error: {e}", exc_info=True)

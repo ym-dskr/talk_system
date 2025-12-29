@@ -107,6 +107,6 @@ def setup_logging(log_dir: str = "logs", level: int = logging.INFO, file_level: 
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     # 初期化完了メッセージ
-    root_logger.info(f"Logging initialized (log_dir={log_dir}, level={logging.getLevelName(level)})")
+    root_logger.debug(f"Logging initialized (log_dir={log_dir}, level={logging.getLevelName(level)})")
 
     return root_logger

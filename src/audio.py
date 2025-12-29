@@ -89,7 +89,7 @@ class AudioHandler:
             info = self.p.get_host_api_info_by_index(0)
             num_devices = info.get('deviceCount')
 
-            self.logger.info("Available audio devices:")
+            self.logger.debug("Available audio devices:")
             for i in range(num_devices):
                 try:
                     device_info = self.p.get_device_info_by_host_api_device_index(0, i)
@@ -104,7 +104,7 @@ class AudioHandler:
                     if max_output_channels > 0:
                         device_type.append(f"Output({max_output_channels}ch)")
 
-                    self.logger.info(
+                    self.logger.debug(
                         f"  [{i}] {device_name} - {'/'.join(device_type)} @ {default_sample_rate}Hz"
                     )
                 except Exception as e:
@@ -131,7 +131,7 @@ class AudioHandler:
         self.target_rate = rate # API Rate (24k)
         self.hw_rate = HARDWARE_SAMPLE_RATE # HW Rate (48k)
 
-        self.logger.info(
+        self.logger.debug(
             f"Opening audio stream: Input=[device={INPUT_DEVICE_INDEX}, ch={INPUT_CHANNELS}], "
             f"Output=[device={OUTPUT_DEVICE_INDEX}, ch={OUTPUT_CHANNELS}], "
             f"HW_rate={self.hw_rate}Hz, Target_rate={self.target_rate}Hz"
@@ -147,7 +147,7 @@ class AudioHandler:
                 output_device_index=OUTPUT_DEVICE_INDEX,
                 frames_per_buffer=chunk * 4  # バッファサイズを4倍に増やして安定化
             )
-            self.logger.info(f"Output stream opened successfully (device={OUTPUT_DEVICE_INDEX})")
+            self.logger.debug(f"Output stream opened successfully (device={OUTPUT_DEVICE_INDEX})")
         except OSError as e:
             self.logger.error(f"Failed to open output stream (device={OUTPUT_DEVICE_INDEX}): {e}")
             self._list_audio_devices()
@@ -166,7 +166,7 @@ class AudioHandler:
                 frames_per_buffer=chunk * 3,  # 入力バッファも増やす
                 input_device_index=INPUT_DEVICE_INDEX
             )
-            self.logger.info(f"Input stream opened successfully (device={INPUT_DEVICE_INDEX})")
+            self.logger.debug(f"Input stream opened successfully (device={INPUT_DEVICE_INDEX})")
         except OSError as e:
             self.logger.error(f"Failed to open input stream (device={INPUT_DEVICE_INDEX}): {e}")
             self._list_audio_devices()
@@ -215,7 +215,7 @@ class AudioHandler:
             4. ループを繰り返す（_running=Falseまで）
         """
         import audioop
-        self.logger.info("Starting audio record loop")
+        self.logger.debug("Starting audio record loop")
         # ループカウンターは削除（パフォーマンス向上）
         while self._running:
             if self.input_stream.get_read_available() >= self.chunk_size:
@@ -304,7 +304,7 @@ class AudioHandler:
         この後、このインスタンスは再利用できません。
         """
         try:
-            self.logger.info("Terminating audio handler")
+            self.logger.debug("Terminating audio handler")
             self.stop_stream()
             self.p.terminate()
             self.logger.debug("Audio handler terminated successfully")
