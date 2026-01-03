@@ -201,6 +201,13 @@ class GUIHandler:
         self.typing_speed = 0.012       # 1msあたりの進む文字数 (約12文字/秒。人間の平均的な発話速度)
         self.last_update_time = 0       # 最終更新時刻
 
+        # 文字幅キャッシュ（フォント計測の高速化）
+        self.char_width_cache = {}  # {文字: 幅} の辞書
+
+        # レンダリング済みテキストサーフェスキャッシュ（描画の高速化）
+        self.rendered_text_cache = {}  # {(text, color): surface} の辞書
+        self.max_text_cache_size = 100  # キャッシュサイズ上限
+
         # デザイン設定
         self.color_user_bg = (240, 248, 255, 180)  # ユーザー用背景（薄い水色、半透明）
         self.color_agent_bg = (255, 240, 245, 180) # AI用背景（薄いピンク、半透明）
@@ -229,45 +236,29 @@ class GUIHandler:
 
         if self.agent_full_text:
             text_len = len(self.agent_full_text)
-            
+
             # 1. 話し終わった直後で未完了の場合は、速度を上げて追いつく
             actual_typing_speed = self.typing_speed
-            
+
             # 話している最中（SPEAKING）なら、文字が先に行き過ぎないように抑制
             # 終わっていたら（IDLE等）、少し早めに残りを出す
             if self.state != self.STATE_SPEAKING:
                 actual_typing_speed *= 2.0
-            
-            # 2. ページ分割を考慮した表示
+
+            # 2. 文字カウントのみ更新（ページ分割は行わない）
             if self.agent_display_count < text_len:
-                # 経過時間に合わせて文字カウントを進める
-                prev_count = int(self.agent_display_count)
                 self.agent_display_count += actual_typing_speed * delta_ms
-                
+
                 # 最大文字数を超えないように制限
                 if self.agent_display_count > text_len:
                     self.agent_display_count = float(text_len)
-                
-                new_count = int(self.agent_display_count)
-                
-                # 文字数が増えた場合のみページ再計算 (負荷軽減)
-                if new_count > prev_count:
-                    # 🆕 プレフィックスを付けた全長を先に計算し、そこから表示分を切り出す
-                    # これにより、途中で改行位置がズレるのを防ぐ
-                    full_display = f"Kikai-kun: {self.agent_full_text}"
-                    # プレフィックス(11文字)分をオフセットとして考慮
-                    typed_len = new_count + 11 
-                    
-                    self.agent_text_pages = self._split_text_into_pages(
-                        full_display[:typed_len],
-                        self.screen_w - 60,
-                        self.AGENT_TEXT_MAX_LINES
-                    )
-                    # タイピング中は常に最新ページを表示
-                    self.agent_page_index = len(self.agent_text_pages) - 1
 
-        # 割り込み時（LISTENINGへの遷移時ではなく、明示的なresetで消す運用に変更）
-        # ただし、前の会話が残っている状態で新しいユーザー発話が「確定」したら消したい
+                # 3. 表示用ページを生成（文字列スライス+軽量ページ分割）
+                display_count = int(self.agent_display_count)
+                self.agent_text_pages = self._create_partial_display(display_count)
+                # タイピング中は常に最新ページを表示
+                if self.agent_text_pages:
+                    self.agent_page_index = len(self.agent_text_pages) - 1
 
         # ────────────────────────────────────────────────────────────
         # 背景クリア
@@ -332,18 +323,26 @@ class GUIHandler:
 
         # ────────────────────────────────────────────────────────────
         # 自動ページ切り替え（3秒間隔）
+        # ただし、タイピング中は無効化（発話終了後のみ）
         # ────────────────────────────────────────────────────────────
-        current_time = pygame.time.get_ticks()
-        if current_time - self.last_page_switch_time > self.page_switch_interval:
-            self.last_page_switch_time = current_time
+        # タイピングが完了しているかチェック
+        typing_completed = (
+            not self.agent_full_text or
+            self.agent_display_count >= len(self.agent_full_text)
+        )
 
-            # ユーザーテキストのページ切り替え（複数ページある場合）
-            if len(self.user_text_pages) > 1:
-                self.user_page_index = (self.user_page_index + 1) % len(self.user_text_pages)
+        if typing_completed:
+            current_time = pygame.time.get_ticks()
+            if current_time - self.last_page_switch_time > self.page_switch_interval:
+                self.last_page_switch_time = current_time
 
-            # AIテキストのページ切り替え（複数ページある場合）
-            if len(self.agent_text_pages) > 1:
-                self.agent_page_index = (self.agent_page_index + 1) % len(self.agent_text_pages)
+                # ユーザーテキストのページ切り替え（複数ページある場合）
+                if len(self.user_text_pages) > 1:
+                    self.user_page_index = (self.user_page_index + 1) % len(self.user_text_pages)
+
+                # AIテキストのページ切り替え（複数ページある場合）
+                if len(self.agent_text_pages) > 1:
+                    self.agent_page_index = (self.agent_page_index + 1) % len(self.agent_text_pages)
 
         # ────────────────────────────────────────────────────────────
         # テキスト表示（ページネーション付き）
@@ -390,9 +389,38 @@ class GUIHandler:
         pygame.display.flip()
         self.clock.tick(30)  # 60FPS→30FPSに下げてCPU負荷を軽減
 
+    def _create_partial_display(self, char_count):
+        """
+        元のテキストから指定文字数分だけを切り出してページ分割
+
+        Args:
+            char_count (int): 表示すべき文字数（プレフィックス「Kikai-kun: 」を除く）
+
+        Returns:
+            list: 部分表示用のページリスト
+
+        Note:
+            文字幅キャッシュにより、ページ分割は2回目以降高速
+        """
+        if not self.agent_full_text or char_count <= 0:
+            return []
+
+        # 元のテキストから指定文字数分を切り出し
+        display_text = self.agent_full_text[:char_count]
+
+        # プレフィックスを追加
+        full_display = f"Kikai-kun: {display_text}"
+
+        # ページ分割（文字幅キャッシュにより高速）
+        return self._split_text_into_pages(
+            full_display,
+            self.screen_w - 60,
+            self.AGENT_TEXT_MAX_LINES
+        )
+
     def _split_text_into_pages(self, text, max_width, max_lines):
         """
-        テキストを複数ページに分割（堅牢な実装）
+        テキストを複数ページに分割（文字幅キャッシュ最適化版）
         """
         if not text:
             return [""]
@@ -401,22 +429,36 @@ class GUIHandler:
         all_lines = []
         # 改行コードで事前分割されている可能性も考慮
         paragraphs = text.split('\n')
-        
+
         for para in paragraphs:
             current_line = ""
+            current_width = 0
+
             for char in para:
-                test_line = current_line + char
-                # 文字幅を計算
-                w, h = self.font.size(test_line)
-                if w <= max_width:
-                    current_line = test_line
+                # 文字幅をキャッシュから取得、なければ計算してキャッシュに保存
+                if char not in self.char_width_cache:
+                    char_w, _ = self.font.size(char)
+                    self.char_width_cache[char] = char_w
+                else:
+                    char_w = self.char_width_cache[char]
+
+                # 追加後の幅を予測
+                test_width = current_width + char_w
+
+                if test_width <= max_width:
+                    current_line += char
+                    current_width = test_width
                 else:
                     if current_line:
                         all_lines.append(current_line)
                         current_line = char
+                        current_width = char_w
                     else:
+                        # 1文字でも幅を超える場合（通常ありえないが安全のため）
                         all_lines.append(char)
                         current_line = ""
+                        current_width = 0
+
             if current_line:
                 all_lines.append(current_line)
 
@@ -430,7 +472,7 @@ class GUIHandler:
 
     def _render_multiline_text(self, text, color, x, y, max_width, max_lines=3, bg_color=None):
         """
-        複数行テキストを背景付きで描画
+        複数行テキストを背景付きで描画（サーフェスキャッシュ最適化版）
 
         改行コード（\n）で分割された複数行のテキストを
         指定された位置に、オプションの背景（角丸）付きで描画します。
@@ -446,17 +488,31 @@ class GUIHandler:
         """
         lines = text.split('\n')
         line_height = self.font.get_height() + 4
-        
+
         # 描画対象の行のみ抽出
         display_lines = lines[:max_lines]
         if not display_lines:
             return
 
-        # 各行のサーフェスを作成して最大幅を計算
+        # 各行のサーフェスを作成（キャッシュ使用）して最大幅を計算
         line_surfaces = []
         actual_max_w = 0
         for line in display_lines:
-            surf = self.font.render(line, True, color)
+            # キャッシュキーを作成
+            cache_key = (line, color)
+
+            # キャッシュから取得、なければレンダリングしてキャッシュに保存
+            if cache_key not in self.rendered_text_cache:
+                surf = self.font.render(line, True, color)
+                # キャッシュサイズ制限: 上限を超えたら古いエントリを削除
+                if len(self.rendered_text_cache) >= self.max_text_cache_size:
+                    # 先頭のエントリを削除（FIFO方式）
+                    first_key = next(iter(self.rendered_text_cache))
+                    del self.rendered_text_cache[first_key]
+                self.rendered_text_cache[cache_key] = surf
+            else:
+                surf = self.rendered_text_cache[cache_key]
+
             line_surfaces.append(surf)
             actual_max_w = max(actual_max_w, surf.get_width())
 
@@ -464,7 +520,7 @@ class GUIHandler:
         padding = 15
         rect_w = actual_max_w + padding * 2
         rect_h = len(line_surfaces) * line_height + padding * 2
-        
+
         if bg_color:
             # 透明度対応のサーフェスを作成
             bg_surface = pygame.Surface((rect_w, rect_h), pygame.SRCALPHA)
@@ -501,6 +557,7 @@ class GUIHandler:
         self.agent_display_count = 0.0
         self.agent_text_pages = []
         self.agent_page_index = 0
+        self.rendered_text_cache.clear()  # レンダリングキャッシュもクリア
 
     def clear_user_text(self):
         """
@@ -542,18 +599,25 @@ class GUIHandler:
             # カウントを維持してスムーズに継続させる
             if not text.startswith(self.agent_full_text):
                 self.agent_display_count = 0.0
-            
+
             self.agent_full_text = text
-            
+
             # 発話が終了していれば即座に完了させる
             if self.state == self.STATE_IDLE:
                 self.agent_display_count = float(len(text))
+                # 完全なテキストをページ分割
                 self.agent_text_pages = self._split_text_into_pages(
                     f"Kikai-kun: {text}",
                     self.screen_w - 60,
                     self.AGENT_TEXT_MAX_LINES
                 )
                 self.agent_page_index = 0
+            else:
+                # タイピング中なら、現在の文字数に基づいて部分表示を生成
+                display_count = int(self.agent_display_count)
+                self.agent_text_pages = self._create_partial_display(display_count)
+                if self.agent_text_pages:
+                    self.agent_page_index = len(self.agent_text_pages) - 1
 
     def quit(self):
         """
