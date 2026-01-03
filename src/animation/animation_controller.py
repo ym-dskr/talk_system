@@ -5,6 +5,7 @@
 アプリケーションの状態に応じて適切なアニメーションを実行します。
 """
 
+import pygame
 from .mouth_animator import MouthAnimator
 from .eye_animator import EyeAnimator
 from .body_animator import BodyAnimator
@@ -39,6 +40,10 @@ class AnimationController:
         self.hand_animator = HandAnimator()    # 手のジェスチャー制御
 
         self.state = 0  # 現在のGUI状態
+        self._neutral_transform = {
+            'offset_x': 0, 'offset_y': 0,
+            'rotation': 0, 'scale': 1.0
+        }
 
     def set_state(self, state):
         """
@@ -82,8 +87,15 @@ class AnimationController:
         # 各サブアニメーターを更新
         mouth_state = self.mouth_animator.update()
         eye_state = self.eye_animator.update()
-        body_transform = self.body_animator.update()
-        hand_transform = self.hand_animator.update()
+        if self.state == 3:
+            now = pygame.time.get_ticks()
+            self.body_animator.sync_time(now)
+            self.hand_animator.sync_time(now)
+            body_transform = self._neutral_transform
+            hand_transform = None
+        else:
+            body_transform = self.body_animator.update()
+            hand_transform = self.hand_animator.update()
 
         # フレームを合成して返す
         return self.renderer.compose(

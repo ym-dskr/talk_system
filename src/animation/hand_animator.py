@@ -200,3 +200,9 @@ class HandAnimator:
             return self._get_gesture_motion()
         else:
             return self._get_idle_motion()
+
+    def sync_time(self, now):
+        """
+        更新タイミングを同期（動きを止めたい時に使用）
+        """
+        self.last_update = now

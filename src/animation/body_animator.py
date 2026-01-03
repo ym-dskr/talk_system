@@ -132,3 +132,9 @@ class BodyAnimator:
             'rotation': rotation,
             'scale': scale
         }
+
+    def sync_time(self, now):
+        """
+        更新タイミングを同期（動きを止めたい時に使用）
+        """
+        self.last_update = now

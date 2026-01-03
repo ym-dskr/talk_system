@@ -33,6 +33,7 @@ class CharacterRenderer:
         """
         self.assets_dir = assets_dir
         self.cache = {}  # レイヤー画像のキャッシュ
+        self._composite_cache = {}  # 合成済みキャッシュ
 
         # ターゲットサイズを計算（画面高さの80%、アスペクト比維持）
         self.target_h = int(screen_height * 0.8)
@@ -97,6 +98,32 @@ class CharacterRenderer:
             self._load_layer(key, path)
 
         print(f"Loaded {len(self.cache)} character layers")
+
+    def _get_composed_layer(self, mouth_state, eye_state):
+        """
+        口と目を合成したサーフェスを取得（キャッシュ対応）
+        """
+        cache_key = f"base_{eye_state}_{mouth_state}"
+        cached = self._composite_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        base_composed = pygame.Surface(self.target_size, pygame.SRCALPHA)
+        base_composed.fill((0, 0, 0, 0))
+
+        if 'base' in self.cache:
+            base_composed.blit(self.cache['base'], (0, 0))
+
+        eye_key = f'eye_{eye_state}'
+        if eye_key in self.cache:
+            base_composed.blit(self.cache[eye_key], (0, 0))
+
+        mouth_key = f'mouth_{mouth_state}'
+        if mouth_key in self.cache:
+            base_composed.blit(self.cache[mouth_key], (0, 0))
+
+        self._composite_cache[cache_key] = base_composed
+        return base_composed
 
     def _load_layer(self, key, relative_path):
         """
@@ -170,32 +197,23 @@ class CharacterRenderer:
                 'rotation': 0, 'scale': 1.0
             }
 
-        # 体の変換を適用した合成サーフェスを作成
-        # まず、元のサイズでレイヤーを合成
-        base_composed = pygame.Surface(self.target_size, pygame.SRCALPHA)
-        base_composed.fill((0, 0, 0, 0))
+        base_composed = self._get_composed_layer(mouth_state, eye_state)
 
-        # レイヤー1: ベース（体）
-        if 'base' in self.cache:
-            base_composed.blit(self.cache['base'], (0, 0))
+        offset_x = body_transform.get('offset_x', 0)
+        offset_y = body_transform.get('offset_y', 0)
+        rotation = body_transform.get('rotation', 0)
+        scale = body_transform.get('scale', 1.0)
 
-        # レイヤー2: 目
-        eye_key = f'eye_{eye_state}'
-        if eye_key in self.cache:
-            base_composed.blit(self.cache[eye_key], (0, 0))
-
-        # レイヤー3: 口
-        mouth_key = f'mouth_{mouth_state}'
-        if mouth_key in self.cache:
-            base_composed.blit(self.cache[mouth_key], (0, 0))
+        if offset_x == 0 and offset_y == 0 and rotation == 0 and scale == 1.0:
+            return base_composed
 
         # 体の変換を適用
         transformed, offset = self._apply_transform(
             base_composed,
-            body_transform.get('offset_x', 0),
-            body_transform.get('offset_y', 0),
-            body_transform.get('rotation', 0),
-            body_transform.get('scale', 1.0)
+            offset_x,
+            offset_y,
+            rotation,
+            scale
         )
 
         # 変換後のサイズに合わせて最終合成サーフェスを作成

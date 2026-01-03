@@ -492,7 +492,7 @@ class ConversationApp:
             if not self.exit_requested:
                 self.exit_requested = True
                 self.logger.debug("Exit requested; will quit in 3 seconds")
-                task = asyncio.create_task(self.delayed_exit(3.0))
+                task = asyncio.create_task(self.delayed_exit(10.0))
                 self.tasks.add(task)
                 task.add_done_callback(self.tasks.discard)
 
