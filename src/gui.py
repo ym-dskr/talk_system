@@ -211,6 +211,10 @@ class GUIHandler:
         self.rendered_text_cache = {}  # {(text, color): surface} の辞書
         self.max_text_cache_size = 100  # キャッシュサイズ上限
 
+        # ページ分割の差分更新用キャッシュ
+        self._last_page_split_count = 0  # 最後にページ分割した文字数
+        self._cached_lines = []  # キャッシュされた行リスト
+
         # デザイン設定
         self.color_user_bg = (240, 248, 255, 180)  # ユーザー用背景（薄い水色、半透明）
         self.color_agent_bg = (255, 240, 245, 180) # AI用背景（薄いピンク、半透明）
@@ -394,7 +398,7 @@ class GUIHandler:
 
     def _create_partial_display(self, char_count):
         """
-        元のテキストから指定文字数分だけを切り出してページ分割
+        元のテキストから指定文字数分だけを切り出してページ分割（差分更新最適化版）
 
         Args:
             char_count (int): 表示すべき文字数（プレフィックス「Kikai-kun: 」を除く）
@@ -403,7 +407,7 @@ class GUIHandler:
             list: 部分表示用のページリスト
 
         Note:
-            文字幅キャッシュにより、ページ分割は2回目以降高速
+            差分更新により、新規追加分のみを処理して高速化
         """
         if not self.agent_full_text or char_count <= 0:
             return []
@@ -412,18 +416,138 @@ class GUIHandler:
         display_text = self.agent_full_text[:char_count]
 
         # プレフィックスを追加
-        full_display = f"Kikai-kun: {display_text}"
+        full_display = f"3FACEロボ: {display_text}"
 
-        # ページ分割（文字幅キャッシュにより高速）
-        return self._split_text_into_pages(
-            full_display,
-            self.screen_w - 60,
-            self.AGENT_TEXT_MAX_LINES
-        )
+        # 差分更新: 前回と同じ文字数なら、キャッシュされたページをそのまま返す
+        if char_count == self._last_page_split_count and self._cached_lines:
+            return self._lines_to_pages(self._cached_lines, self.AGENT_TEXT_MAX_LINES)
+
+        # 新規テキストが追加された場合のみ、差分処理
+        max_width = self.screen_w - 60
+
+        # 前回から文字数が減った（リセット）場合は、全体を再計算
+        if char_count < self._last_page_split_count:
+            self._last_page_split_count = 0
+            self._cached_lines = []
+
+        # 前回処理済みのテキスト
+        if self._last_page_split_count > 0:
+            prefix = "3FACEロボ: "
+            prev_text = prefix + self.agent_full_text[:self._last_page_split_count]
+        else:
+            prev_text = ""
+
+        # 新規追加分のテキスト
+        new_text = full_display[len(prev_text):]
+
+        # 差分更新: 新規追加分のみを行分割処理
+        if new_text:
+            self._cached_lines = self._append_text_to_lines(
+                self._cached_lines,
+                new_text,
+                max_width
+            )
+
+        # 文字数を更新
+        self._last_page_split_count = char_count
+
+        # ページ分割して返す
+        return self._lines_to_pages(self._cached_lines, self.AGENT_TEXT_MAX_LINES)
+
+    def _append_text_to_lines(self, existing_lines, new_text, max_width):
+        """
+        既存の行リストに新規テキストを追加（差分更新用）
+
+        Args:
+            existing_lines (list): 既存の行リスト
+            new_text (str): 新規追加テキスト
+            max_width (int): 1行の最大幅
+
+        Returns:
+            list: 更新された行リスト
+        """
+        # 既存行のコピーを作成
+        lines = existing_lines.copy()
+
+        # 最後の行が未完成の可能性があるため、取り出す
+        if lines:
+            current_line = lines[-1]
+            lines = lines[:-1]
+            # 現在行の幅を再計算
+            current_width = sum(self.char_width_cache.get(c, 0) for c in current_line)
+        else:
+            current_line = ""
+            current_width = 0
+
+        # 改行コードで分割して処理
+        paragraphs = new_text.split('\n')
+
+        for i, para in enumerate(paragraphs):
+            for char in para:
+                # 文字幅をキャッシュから取得、なければ計算してキャッシュに保存
+                if char not in self.char_width_cache:
+                    char_w, _ = self.font.size(char)
+                    self.char_width_cache[char] = char_w
+                else:
+                    char_w = self.char_width_cache[char]
+
+                # 追加後の幅を予測
+                test_width = current_width + char_w
+
+                if test_width <= max_width:
+                    current_line += char
+                    current_width = test_width
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                        current_line = char
+                        current_width = char_w
+                    else:
+                        # 1文字でも幅を超える場合（通常ありえないが安全のため）
+                        lines.append(char)
+                        current_line = ""
+                        current_width = 0
+
+            # パラグラフの終わりで改行（最後のパラグラフでない場合）
+            if i < len(paragraphs) - 1:
+                if current_line:
+                    lines.append(current_line)
+                current_line = ""
+                current_width = 0
+
+        # 最後の行を追加（未完成でも保持）
+        if current_line:
+            lines.append(current_line)
+
+        return lines
+
+    def _lines_to_pages(self, lines, max_lines):
+        """
+        行リストをページに分割
+
+        Args:
+            lines (list): 行のリスト
+            max_lines (int): 1ページあたりの最大行数
+
+        Returns:
+            list: ページリスト
+        """
+        if not lines:
+            return [""]
+
+        pages = []
+        for i in range(0, len(lines), max_lines):
+            chunk = lines[i:i + max_lines]
+            pages.append("\n".join(chunk))
+
+        return pages if pages else [""]
 
     def _split_text_into_pages(self, text, max_width, max_lines):
         """
         テキストを複数ページに分割（文字幅キャッシュ最適化版）
+
+        Note: この関数はユーザーテキスト用に使用され、
+              AIテキストは _create_partial_display で差分更新されます
         """
         if not text:
             return [""]
@@ -602,18 +726,17 @@ class GUIHandler:
             # カウントを維持してスムーズに継続させる
             if not text.startswith(self.agent_full_text):
                 self.agent_display_count = 0.0
+                # 新規テキストの場合、差分更新キャッシュもリセット
+                self._last_page_split_count = 0
+                self._cached_lines = []
 
             self.agent_full_text = text
 
             # 発話が終了していれば即座に完了させる
             if self.state == self.STATE_IDLE:
                 self.agent_display_count = float(len(text))
-                # 完全なテキストをページ分割
-                self.agent_text_pages = self._split_text_into_pages(
-                    f"Kikai-kun: {text}",
-                    self.screen_w - 60,
-                    self.AGENT_TEXT_MAX_LINES
-                )
+                # 完全なテキストをページ分割（差分更新を使用）
+                self.agent_text_pages = self._create_partial_display(len(text))
                 self.agent_page_index = 0
             else:
                 # タイピング中なら、現在の文字数に基づいて部分表示を生成
