@@ -16,7 +16,7 @@ venv/
 Thumbs.db
 
 # Logs
-*.log
+*logs/
 
 # Asset and Model Files
 # デフォルトで.ppn, .pv, .pngファイルを除外し、必須ファイルのみGit管理に含める
