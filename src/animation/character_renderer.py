@@ -23,26 +23,30 @@ class CharacterRenderer:
     高速な合成処理を実現しています。
     """
 
-    def __init__(self, screen_height, assets_dir):
+    def __init__(self, screen_height, assets_dir, height_ratio=0.8, width_ratio=0.8, default_scale=1.2):
         """
         キャラクターレンダラーを初期化
 
         Args:
             screen_height (int): 画面の高さ（ピクセル）
             assets_dir (str): キャラクターアセットディレクトリのパス
+            height_ratio (float): 画面の高さに対するキャラクターの高さの比率（デフォルト: 0.8）
+            width_ratio (float): キャラクターの幅と高さの比率（デフォルト: 0.8）
+            default_scale (float): body transformのデフォルトスケール（デフォルト: 1.2）
         """
         self.assets_dir = assets_dir
         self.cache = {}  # レイヤー画像のキャッシュ
         self._composite_cache = {}  # 合成済みキャッシュ
+        self.default_scale = default_scale  # デフォルトスケールを保存
 
-        # ターゲットサイズを計算（画面高さの80%、アスペクト比維持）
-        self.target_h = int(screen_height * 0.8)
-        self.target_size = (self.target_h, self.target_h)  # 正方形を想定
+        # ターゲットサイズを計算（設定可能な比率を使用）
+        self.target_h = int(screen_height * height_ratio)
+        self.target_size = (int(self.target_h * width_ratio), self.target_h)
 
         # 全アセットを読み込み
         self._load_assets()
 
-    def _apply_transform(self, surface, offset_x=0, offset_y=0, rotation=0, scale=1.0):
+    def _apply_transform(self, surface, offset_x=0, offset_y=0, rotation=0, scale=None):
         """
         サーフェスに変換（移動・回転・スケール）を適用
 
@@ -51,11 +55,14 @@ class CharacterRenderer:
             offset_x (float): X方向のオフセット（ピクセル）
             offset_y (float): Y方向のオフセット（ピクセル）
             rotation (float): 回転角度（度）
-            scale (float): スケール倍率
+            scale (float): スケール倍率（Noneの場合はself.default_scaleを使用）
 
         Returns:
             tuple: (変換済みサーフェス, 描画位置のオフセット)
         """
+        # scaleがNoneの場合はデフォルトスケールを使用
+        if scale is None:
+            scale = self.default_scale
         # スケール適用
         if scale != 1.0:
             new_w = int(surface.get_width() * scale)
@@ -190,11 +197,11 @@ class CharacterRenderer:
         Returns:
             pygame.Surface: 合成されたキャラクター画像
         """
-        # デフォルト変換パラメータ
+        # デフォルト変換パラメータ（インスタンスのdefault_scaleを使用）
         if body_transform is None:
             body_transform = {
                 'offset_x': 0, 'offset_y': 0,
-                'rotation': 0, 'scale': 1.0
+                'rotation': 0, 'scale': self.default_scale
             }
 
         base_composed = self._get_composed_layer(mouth_state, eye_state)
@@ -202,10 +209,10 @@ class CharacterRenderer:
         offset_x = body_transform.get('offset_x', 0)
         offset_y = body_transform.get('offset_y', 0)
         rotation = body_transform.get('rotation', 0)
-        scale = body_transform.get('scale', 1.0)
+        scale = body_transform.get('scale', self.default_scale)
 
-        if offset_x == 0 and offset_y == 0 and rotation == 0 and scale == 1.0:
-            return base_composed
+        # 注: 以前はショートカット最適化がありましたが、default_scaleを常に適用するため削除しました
+        # （ショートカットではdefault_scaleが適用されないバグがあったため）
 
         # 体の変換を適用
         transformed, offset = self._apply_transform(

@@ -40,9 +40,10 @@ class AnimationController:
         self.hand_animator = HandAnimator()    # 手のジェスチャー制御
 
         self.state = 0  # 現在のGUI状態
+        # ニュートラル変換（レンダラーのdefault_scaleを使用）
         self._neutral_transform = {
             'offset_x': 0, 'offset_y': 0,
-            'rotation': 0, 'scale': 1.0
+            'rotation': 0, 'scale': self.renderer.default_scale
         }
 
     def set_state(self, state):
@@ -95,6 +96,8 @@ class AnimationController:
             hand_transform = None
         else:
             body_transform = self.body_animator.update()
+            # body_animatorのscaleは呼吸モーションのみ（1.0前後）なので、default_scaleを乗算
+            body_transform['scale'] *= self.renderer.default_scale
             hand_transform = self.hand_animator.update()
 
         # フレームを合成して返す

@@ -116,10 +116,13 @@ class GUIHandler:
             print(f"Initializing character animation system...")
             print(f"Assets directory: {config.CHAR_ASSETS_DIR}")
 
-            # キャラクター描画エンジン初期化
+            # キャラクター描画エンジン初期化（設定から表示パラメータを読み込み）
             self.character = CharacterRenderer(
                 screen_height=self.screen_h,
-                assets_dir=config.CHAR_ASSETS_DIR
+                assets_dir=config.CHAR_ASSETS_DIR,
+                height_ratio=config.CHARACTER_HEIGHT_RATIO,
+                width_ratio=config.CHARACTER_WIDTH_RATIO,
+                default_scale=config.CHARACTER_DEFAULT_SCALE
             )
             print(f"CharacterRenderer created successfully")
 

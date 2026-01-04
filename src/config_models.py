@@ -91,6 +91,23 @@ class PathsConfig(BaseModel):
             self.char_assets_dir = self.assets_dir / "character"
 
 
+class CharacterDisplayConfig(BaseModel):
+    """
+    キャラクター表示設定
+
+    キャラクターの画面上での表示サイズや位置に関する設定を管理します。
+
+    Attributes:
+        height_ratio: 画面の高さに対するキャラクターの高さの比率（デフォルト: 0.8）
+        width_ratio: キャラクターの幅と高さの比率（デフォルト: 0.8で正方形に近い）
+        default_scale: body transformのデフォルトスケール（デフォルト: 1.2）
+                      値を大きくするとキャラクターが大きく表示されます
+    """
+    height_ratio: float = Field(default=0.8, ge=0.1, le=2.0, description="画面高さに対するキャラクター高さの比率")
+    width_ratio: float = Field(default=0.8, ge=0.1, le=2.0, description="キャラクターの幅/高さ比率")
+    default_scale: float = Field(default=1.2, ge=0.1, le=5.0, description="デフォルトスケール倍率")
+
+
 class AppConfig(BaseSettings):
     """
     アプリケーション全体設定
@@ -105,6 +122,7 @@ class AppConfig(BaseSettings):
         audio: 音声設定
         realtime: Realtime API設定
         paths: ファイルパス設定
+        character_display: キャラクター表示設定
         inactivity_timeout: 無操作タイムアウト（秒）
 
     Examples:
@@ -132,6 +150,7 @@ class AppConfig(BaseSettings):
     audio: AudioConfig = Field(default_factory=AudioConfig, description="音声設定")
     realtime: RealtimeAPIConfig = Field(default_factory=RealtimeAPIConfig, description="Realtime API設定")
     paths: PathsConfig = Field(default_factory=PathsConfig, description="パス設定")
+    character_display: CharacterDisplayConfig = Field(default_factory=CharacterDisplayConfig, description="キャラクター表示設定")
 
     # アプリケーション設定
     inactivity_timeout: float = Field(default=180.0, description="無操作タイムアウト（秒）")
@@ -141,6 +160,7 @@ class AppConfig(BaseSettings):
         # 環境変数から個別設定を読み込み
         self._load_audio_config_from_env()
         self._load_paths_config_from_env()
+        self._load_character_display_config_from_env()
 
     def _load_audio_config_from_env(self):
         """環境変数から音声設定を読み込み"""
@@ -181,3 +201,25 @@ class AppConfig(BaseSettings):
 
         if os.getenv("CHAR_ASSETS_DIR"):
             self.paths.char_assets_dir = Path(os.getenv("CHAR_ASSETS_DIR"))
+
+    def _load_character_display_config_from_env(self):
+        """環境変数からキャラクター表示設定を読み込み"""
+        import os
+
+        if os.getenv("CHARACTER_HEIGHT_RATIO"):
+            try:
+                self.character_display.height_ratio = float(os.getenv("CHARACTER_HEIGHT_RATIO"))
+            except ValueError:
+                pass
+
+        if os.getenv("CHARACTER_WIDTH_RATIO"):
+            try:
+                self.character_display.width_ratio = float(os.getenv("CHARACTER_WIDTH_RATIO"))
+            except ValueError:
+                pass
+
+        if os.getenv("CHARACTER_DEFAULT_SCALE"):
+            try:
+                self.character_display.default_scale = float(os.getenv("CHARACTER_DEFAULT_SCALE"))
+            except ValueError:
+                pass

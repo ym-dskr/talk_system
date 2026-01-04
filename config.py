@@ -87,3 +87,13 @@ if _app_config:
 else:
     REALTIME_MODEL = "gpt-realtime-mini-2025-12-15"
     REALTIME_URL = "wss://api.openai.com/v1/realtime"
+
+# キャラクター表示設定
+if _app_config:
+    CHARACTER_HEIGHT_RATIO = _app_config.character_display.height_ratio
+    CHARACTER_WIDTH_RATIO = _app_config.character_display.width_ratio
+    CHARACTER_DEFAULT_SCALE = _app_config.character_display.default_scale
+else:
+    CHARACTER_HEIGHT_RATIO = 0.8
+    CHARACTER_WIDTH_RATIO = 0.7
+    CHARACTER_DEFAULT_SCALE = 1.2
